@@ -6,6 +6,7 @@ Releases/
 *.tmp
 *.log
 artifacts/
+docs/*.import
 __pycache__/
 *.pyc
 Assets/Robot/OEM/ency/
