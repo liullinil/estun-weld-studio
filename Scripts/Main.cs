@@ -165,7 +165,7 @@ public partial class Main : Node3D
         _tcp.Text=string.Format(CultureInfo.InvariantCulture,"TCP / BASE                       mm\nX  {0,8:0.0}   Y  {1,8:0.0}\nZ  {2,8:0.0}",p.X,p.Y,p.Z);
         _motion.Text="●  "+(_controller.IsPlannedMotion?(_welding.Effects.IsArcActive?"WELDING ARC ACTIVE":"TRAVEL MOVE"):_controller.ActiveMotion.ToUpperInvariant());
         _motion.Modulate=_controller.EmergencyStopped?new Color("ff7770"):_controller.MotionActive?new Color("88d3b4"):Colors.White;
-        _fps.Text=$"{Engine.GetFramesPerSecond()} FPS   /   FORWARD+   /   C#";
+        _fps.Text=$"{Engine.GetFramesPerSecond()} FPS   /   3D {GetViewport().Scaling3DScale*100:0}%   /   FORWARD+";
         _toast.Visible=_time<_toastUntil;
         if(_autoPlan && !_startedAutoPlan && _welding.Part!=null && !_welding.IsBusy)
         {_startedAutoPlan=true;_welding.Generate();}

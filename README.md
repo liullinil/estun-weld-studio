@@ -46,6 +46,10 @@ The rotating view cube offers **26 face, edge and corner views**, mouse orbit an
 
 Stable HDR and a 1024-pixel room reflection probe provide material highlights. The probe captures only the fixed room, excluding the moving robot, workpiece, overlays and nearby mounting platform. **Screen-space reflections and screen-space bounce are off by default** to avoid silhouette gaps, pixelated reflections and frozen reflection ghosts; both remain optional effects. Existing settings are migrated once while retaining exposure, bloom and other preferences. Painted housings and concrete are dielectric materials, and the platform has a satin finish.
 
+**Fullscreen performance:** the 1024-pixel reflection atlas is limited to four slots rather than the engine default of 64. This reduces its reserved GPU memory from roughly 4 GiB to 256 MiB without reducing reflection resolution. The default **EFFECTS → 3D resolution → Auto** keeps scene rendering near the 1440×900 window pixel budget when maximizing, entering fullscreen or using a high-DPI display. Spatial FSR scales only 3D; text, pendant controls and CAD picking retain their native display resolution. **Native** restores full display-resolution 3D, and **Manual** exposes a 25–100% scale. At very high resolutions Auto trades some fine 3D detail for performance. TAA and depth of field remain optional and are not enabled by scaling.
+
+Measured on the development RTX 3060 Laptop: the fullscreen slowdown reproduced at approximately 3 FPS before the atlas correction. After correction, the same test reached approximately 54 FPS at native fullscreen resolution and 60 FPS in Auto, against 60 FPS in the window. These are short, same-machine measurements with VSync disabled, not a cross-hardware guarantee. See [performance measurements](docs/fullscreen-performance.json).
+
 The stage uses HDR reflections, metal PBR, ACES tone mapping and studio lights. Welding adds flickering arc illumination, spatter, rising smoke and a visible deposited bead that cools from incandescent metal. Thermal distortion and physical metallurgy are not simulated.
 
 ## Teach pendant
@@ -93,6 +97,8 @@ Verified with actual STEP input and the shipping Main scene:
 | Collision geometry and all generated sample segments | 336 |
 | End-to-end CAD/planning/playback/edit lifecycle | 28 |
 | Native OpenCascade tests | 7 |
+
+Fullscreen regression checks additionally cover GPU reflection-memory allocation, 1080p/1440p/4K pixel budgets, live resize with the settings panel hidden, mode persistence and unchanged UI/camera picking transforms. `Tests/RenderBenchmark.tscn` optionally measures windowed, maximized and fullscreen modes on the actual GPU.
 
 The native tests include inch/mm conversion, rotated/translated assemblies, circular and non-right-angle edges, face normals, contact seams and invalid input. Workflow tests cover cancellation, busy-state races, stale-program invalidation, moved start pose, E-stop and actual gizmo drag.
 

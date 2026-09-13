@@ -15,6 +15,10 @@ public partial class EffectsPanel : PanelContainer
     private bool _syncing, _built, _dirty;
     private double _saveDelay;
     private VBoxContainer _rows = null!;
+    private Vector2I _renderSize;
+    private int _resolutionMode=-1;
+    private float _manualRenderScale=-1;
+    private Label _resolutionInfo=null!;
     private readonly Color _ink=new("e3e9e9"), _muted=new("8d9fa9"), _amber=new("f4b658");
 
     public void Build(StudioWorld world, Camera3D camera)
@@ -42,6 +46,10 @@ public partial class EffectsPanel : PanelContainer
         content.AddChild(scroll);
         _rows=new VBoxContainer { SizeFlagsHorizontal=SizeFlags.ExpandFill };scroll.AddChild(_rows);_rows.AddThemeConstantOverride("separation",3);
         Settings=RenderSettings.Load();
+        Section("DISPLAY PERFORMANCE");
+        OptionRow("3D resolution",new[]{"Auto","Native","Manual"},()=>Settings.ResolutionMode,v=>Settings.ResolutionMode=v,"Auto keeps the 3D workload near a 1440 × 900 window using spatial FSR. UI and CAD controls remain full resolution. Native uses every display pixel; Manual uses the scale below.");
+        SliderRow("Manual 3D scale",.25f,1,.01f,()=>Settings.ManualRenderScale,v=>Settings.ManualRenderScale=v);
+        _resolutionInfo=Label("",10,_muted);_rows.AddChild(_resolutionInfo);
         Section("LIGHT & MATERIAL");
         ToggleRow("Contact shadows / SSAO",()=>Settings.Ssao,v=>Settings.Ssao=v,"Ambient occlusion adds contact depth around close surfaces.");
         ToggleRow("Screen-space bounce (optional)",()=>Settings.Ssil,v=>Settings.Ssil=v,"Optional screen-space indirect light can introduce noise. HDR studio lighting remains active when this is off.");
@@ -84,6 +92,7 @@ public partial class EffectsPanel : PanelContainer
         viewport.Msaa3D=(Viewport.Msaa)Settings.Msaa;
         viewport.UseTaa=Settings.Taa;
         viewport.ScreenSpaceAA=Viewport.ScreenSpaceAAEnum.Disabled;
+        UpdateRenderResolution();
         ApplyLightShadows(_world,Settings.Shadows);
         if(_camera.Attributes is not CameraAttributesPractical) _camera.Attributes=new CameraAttributesPractical();
         var attributes=(CameraAttributesPractical)_camera.Attributes;
@@ -115,11 +124,21 @@ public partial class EffectsPanel : PanelContainer
     public override void _Process(double delta)
     {
         if(!_built) return;
+        Vector2I renderSize=RenderResolution.GetRenderSize(GetViewport());
+        if(renderSize!=_renderSize || _resolutionMode!=Settings.ResolutionMode || !Mathf.IsEqualApprox(_manualRenderScale,Settings.ManualRenderScale))UpdateRenderResolution();
         if(Settings.DepthOfField && _camera.Attributes is CameraAttributesPractical attributes) SetFocusDistance(attributes);
         if(_dirty && (_saveDelay-=delta)<=0){Settings.Save();_dirty=false;}
     }
 
     public override void _ExitTree() { if(_dirty) Settings.Save(); }
+
+    private void UpdateRenderResolution()
+    {
+        var viewport=GetViewport();RenderResolution.Apply(viewport,Settings);
+        _renderSize=RenderResolution.GetRenderSize(viewport);_resolutionMode=Settings.ResolutionMode;_manualRenderScale=Settings.ManualRenderScale;
+        float scale=viewport.Scaling3DScale;
+        if(_resolutionInfo!=null)_resolutionInfo.Text=$"3D  {Mathf.RoundToInt(_renderSize.X*scale)} × {Mathf.RoundToInt(_renderSize.Y*scale)}  ·  {scale*100:0}%  ·  UI native";
+    }
 
     private void RefreshControls()
     {

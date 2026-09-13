@@ -1,0 +1,74 @@
+[
+  {
+    "phase": "Window native",
+    "width": 1440,
+    "height": 900,
+    "scale": 1,
+    "fps": 60.938010808505055,
+    "frameP95ms": 17.973,
+    "gpuMs": 13.830073770929555,
+    "renderCpuMs": 1.1721639347369555,
+    "frames": 244,
+    "focused": true
+  },
+  {
+    "phase": "Maximized native",
+    "width": 1614,
+    "height": 1009,
+    "scale": 1,
+    "fps": 57.49839004507875,
+    "frameP95ms": 18.845,
+    "gpuMs": 14.998769573543383,
+    "renderCpuMs": 1.0363782605399257,
+    "frames": 230,
+    "focused": true
+  },
+  {
+    "phase": "Maximized auto",
+    "width": 1614,
+    "height": 1009,
+    "scale": 0.89208275,
+    "fps": 59.631765117712895,
+    "frameP95ms": 18.336,
+    "gpuMs": 13.983368195250444,
+    "renderCpuMs": 1.0173849391139203,
+    "frames": 239,
+    "focused": true
+  },
+  {
+    "phase": "Fullscreen native",
+    "width": 1728,
+    "height": 1080,
+    "scale": 1,
+    "fps": 54.47132084957268,
+    "frameP95ms": 19.284,
+    "gpuMs": 15.911779806154584,
+    "renderCpuMs": 1.0799495419231029,
+    "frames": 218,
+    "focused": true
+  },
+  {
+    "phase": "Fullscreen auto",
+    "width": 1728,
+    "height": 1080,
+    "scale": 0.8333333,
+    "fps": 60.33060673892878,
+    "frameP95ms": 17.754,
+    "gpuMs": 13.777466947382147,
+    "renderCpuMs": 1.0013181828270274,
+    "frames": 242,
+    "focused": true
+  },
+  {
+    "phase": "Window auto",
+    "width": 1440,
+    "height": 900,
+    "scale": 1,
+    "fps": 61.76109265334371,
+    "frameP95ms": 17.846,
+    "gpuMs": 13.744463709092908,
+    "renderCpuMs": 1.0537500008940697,
+    "frames": 248,
+    "focused": true
+  }
+]

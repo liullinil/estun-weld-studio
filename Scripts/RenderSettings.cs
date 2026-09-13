@@ -19,6 +19,9 @@ public sealed class RenderSettings
     public int Msaa { get; set; } = 2;
     public bool Taa { get; set; } = false;
     public bool DepthOfField { get; set; } = false;
+    /// <summary>0: fixed pixel budget, 1: native display resolution, 2: manual spatial scale.</summary>
+    public int ResolutionMode { get; set; } = RenderResolution.Auto;
+    public float ManualRenderScale { get; set; } = 1f;
     public bool Sparks { get; set; } = true;
     public bool Smoke { get; set; } = true;
     /// <summary>Weld bead detail: 0 preview, 1 high, 2 ultra.</summary>
@@ -40,6 +43,9 @@ public sealed class RenderSettings
         settings.Msaa=Mathf.Clamp(config.GetValue("render","msaa",settings.Msaa).AsInt32(),0,3);
         settings.Taa=config.GetValue("render","taa",settings.Taa).AsBool();
         settings.DepthOfField=config.GetValue("render","depth_of_field",settings.DepthOfField).AsBool();
+        settings.ResolutionMode=Mathf.Clamp(config.GetValue("render","resolution_mode",settings.ResolutionMode).AsInt32(),0,2);
+        float manualScale=config.GetValue("render","manual_render_scale",settings.ManualRenderScale).AsSingle();
+        settings.ManualRenderScale=float.IsFinite(manualScale)?Mathf.Clamp(manualScale,RenderResolution.MinimumScale,1):1;
         settings.Sparks=config.GetValue("welding","sparks",settings.Sparks).AsBool();
         settings.Smoke=config.GetValue("welding","smoke",settings.Smoke).AsBool();
         settings.BeadDetail=Mathf.Clamp(config.GetValue("welding","bead_detail",settings.BeadDetail).AsInt32(),0,2);
@@ -61,6 +67,7 @@ public sealed class RenderSettings
         config.SetValue("render","bloom",Bloom);config.SetValue("render","bloom_strength",BloomStrength);
         config.SetValue("render","exposure",Exposure);config.SetValue("render","shadows",Shadows);config.SetValue("render","fog",Fog);
         config.SetValue("render","msaa",Msaa);config.SetValue("render","taa",Taa);config.SetValue("render","depth_of_field",DepthOfField);
+        config.SetValue("render","resolution_mode",ResolutionMode);config.SetValue("render","manual_render_scale",ManualRenderScale);
         config.SetValue("welding","sparks",Sparks);config.SetValue("welding","smoke",Smoke);config.SetValue("welding","bead_detail",BeadDetail);
         var error=config.Save(FilePath);
         if(error!=Error.Ok) GD.PushWarning($"Could not save rendering settings: {error}");

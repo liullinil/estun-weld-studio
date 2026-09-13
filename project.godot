@@ -36,6 +36,7 @@ environment/ssao/half_size=false
 environment/ssil/half_size=false
 environment/screen_space_reflection/roughness_quality=3
 reflections/reflection_atlas/reflection_size=1024
+reflections/reflection_atlas/reflection_count=4
 textures/default_filters/anisotropic_filtering_level=4
 
 [physics]
