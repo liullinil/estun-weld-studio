@@ -6,6 +6,8 @@ The application uses the actual segmented **ESTUN S20-180 Pro** CAD model, an En
 
 ![Welding workspace](docs/workspace.png)
 
+![Active welding simulation](docs/welding.png)
+
 ## Run
 
 Extract the Windows archive from [GitHub Releases](https://github.com/liullinil/estun-weld-studio/releases) and launch **ESTUN Studio.exe**. Keep the adjacent **data_EstunStudio_windows_x86_64** and **CadRuntime** folders. No installed Godot, .NET or Python is needed. Windows 10/11 x64 and a Vulkan-capable GPU are required; a discrete GPU is recommended.
