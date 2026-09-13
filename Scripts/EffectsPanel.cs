@@ -27,7 +27,7 @@ public partial class EffectsPanel : PanelContainer
         _built=true;_world=world;_camera=camera;
         Name="RenderEffects";
         Position=new Vector2(689,168);
-        Size=CustomMinimumSize=new Vector2(407,642);
+        Size=CustomMinimumSize=new Vector2(420,600);
         MouseFilter=MouseFilterEnum.Stop;
         ZIndex=20;
         var panel=new StyleBoxFlat { BgColor=new Color("1b252d"),BorderColor=new Color("44515b"),
@@ -42,7 +42,7 @@ public partial class EffectsPanel : PanelContainer
         var title=Label("VISUAL EFFECTS",18,_ink);title.SizeFlagsHorizontal=SizeFlags.ExpandFill;header.AddChild(title);
         var close=Button("×",31);header.AddChild(close);close.Pressed+=Hide;
         var intro=Label("Tune the studio and welding simulation.",11,_muted);content.AddChild(intro);
-        var scroll=new ScrollContainer { CustomMinimumSize=new Vector2(365,468),SizeFlagsVertical=SizeFlags.ExpandFill,HorizontalScrollMode=ScrollContainer.ScrollMode.Disabled };
+        var scroll=new ScrollContainer { CustomMinimumSize=new Vector2(374,400),SizeFlagsVertical=SizeFlags.ExpandFill,HorizontalScrollMode=ScrollContainer.ScrollMode.Disabled };
         content.AddChild(scroll);
         _rows=new VBoxContainer { SizeFlagsHorizontal=SizeFlags.ExpandFill };scroll.AddChild(_rows);_rows.AddThemeConstantOverride("separation",3);
         Settings=RenderSettings.Load();
@@ -116,7 +116,7 @@ public partial class EffectsPanel : PanelContainer
         foreach(Node child in parent.GetChildren())
         {
             // Arc light has its own simulation lifecycle and does not cast softbox shadows.
-            if(child is Light3D light && (child is SpotLight3D || child is DirectionalLight3D)) light.ShadowEnabled=enabled;
+            if(child is Light3D light && (child is SpotLight3D || child is DirectionalLight3D)) light.ShadowEnabled=enabled&&light.GetMeta("studio_casts_shadow",false).AsBool();
             ApplyLightShadows(child,enabled);
         }
     }
@@ -148,7 +148,7 @@ public partial class EffectsPanel : PanelContainer
     private Label Label(string text,int size,Color color)
     {
         var label=new Label {Text=text,MouseFilter=MouseFilterEnum.Ignore};
-        label.AddThemeFontSizeOverride("font_size",size);label.AddThemeColorOverride("font_color",color);return label;
+        label.AddThemeFontSizeOverride("font_size",Math.Max(12,size));label.AddThemeColorOverride("font_color",color);return label;
     }
 
     private void Section(string text)
@@ -191,7 +191,7 @@ public partial class EffectsPanel : PanelContainer
     {
         var row=Row(caption,tooltip);
         var select=new OptionButton {CustomMinimumSize=new Vector2(96,29),FocusMode=FocusModeEnum.None,TooltipText=tooltip};
-        row.AddChild(select);select.AddThemeFontSizeOverride("font_size",11);
+        row.AddChild(select);select.AddThemeFontSizeOverride("font_size",13);
         select.AddThemeStyleboxOverride("normal",ButtonStyle(new Color("293943"),new Color("475761")));
         select.AddThemeStyleboxOverride("hover",ButtonStyle(new Color("374852"),new Color("70838d")));
         select.AddThemeStyleboxOverride("pressed",ButtonStyle(new Color("6c512d"),_amber));
@@ -203,7 +203,7 @@ public partial class EffectsPanel : PanelContainer
     private Button Button(string text,float width)
     {
         var button=new Button {Text=text,CustomMinimumSize=new Vector2(width,29),FocusMode=FocusModeEnum.None,MouseDefaultCursorShape=CursorShape.PointingHand};
-        button.AddThemeFontSizeOverride("font_size",10);button.AddThemeColorOverride("font_color",_muted);
+        button.AddThemeFontSizeOverride("font_size",13);button.AddThemeColorOverride("font_color",_muted);
         button.AddThemeColorOverride("font_hover_color",_ink);button.AddThemeColorOverride("font_pressed_color",new Color("f8d99d"));
         button.AddThemeStyleboxOverride("normal",ButtonStyle(new Color("26353f"),new Color("3b4e5a")));
         button.AddThemeStyleboxOverride("hover",ButtonStyle(new Color("344750"),new Color("7b8f99")));

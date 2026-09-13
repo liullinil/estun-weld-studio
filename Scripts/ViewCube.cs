@@ -82,7 +82,7 @@ public partial class ViewCube : Control
             CornerRadiusTopLeft = 12, CornerRadiusTopRight = 12, CornerRadiusBottomLeft = 12, CornerRadiusBottomRight = 12,
             ShadowColor = new Color(0,0,0,.17f), ShadowSize = 9 };
         DrawStyleBox(panel, new Rect2(Vector2.Zero, Size));
-        DrawString(_font,new Vector2(13,20),"VIEW",HorizontalAlignment.Left,-1,9,new Color("98a8b3"));
+        DrawString(_font,new Vector2(13,20),"VIEW",HorizontalAlignment.Left,-1,11,new Color("98a8b3"));
         DrawArc(Center + new Vector2(0,8), 57, 0, Mathf.Tau, 72, new Color(.43f,.52f,.58f,.14f), 1, true);
 
         bool homeHover = _home.HasPoint(_pointer);
@@ -120,14 +120,14 @@ public partial class ViewCube : Control
             Outline(polygon,new Color("a0adb5"),1.3f);
             var labelCenter=Project(face.Normal*1.001f);
             var labelColor=new Color("f1f3f2");
-            float labelWidth=_font.GetStringSize(face.Name,HorizontalAlignment.Left,-1,9).X;
+            float labelWidth=_font.GetStringSize(face.Name,HorizontalAlignment.Left,-1,11).X;
             if(facing>.20f)
             {
                 // Apply the projected face plane to the lettering so it rotates with the cube.
                 Vector2 x=(Project(face.Normal + face.U*.3f)-labelCenter)/(.3f*ScaleFactor);
                 Vector2 y=(Project(face.Normal - face.V*.3f)-labelCenter)/(.3f*ScaleFactor);
                 DrawSetTransformMatrix(new Transform2D(x,y,labelCenter));
-                DrawString(_font,new Vector2(-labelWidth*.5f,3),face.Name,HorizontalAlignment.Left,-1,9,labelColor);
+                DrawString(_font,new Vector2(-labelWidth*.5f,3),face.Name,HorizontalAlignment.Left,-1,11,labelColor);
                 DrawSetTransformMatrix(Transform2D.Identity);
             }
         }

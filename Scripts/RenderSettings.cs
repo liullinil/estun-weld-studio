@@ -6,7 +6,7 @@ namespace EstunStudio;
 public sealed class RenderSettings
 {
     private const string FilePath = "user://render-settings.cfg";
-    public const int RenderingRevision = 2;
+    public const int RenderingRevision = 3;
     public bool Ssao { get; set; } = true;
     public bool Ssil { get; set; } = false;
     public bool Ssr { get; set; } = false;
@@ -16,11 +16,11 @@ public sealed class RenderSettings
     public bool Shadows { get; set; } = true;
     public bool Fog { get; set; } = false;
     /// <summary>Viewport.Msaa value: 0 off, 1 2×, 2 4×, 3 8×.</summary>
-    public int Msaa { get; set; } = 2;
+    public int Msaa { get; set; } = 1;
     public bool Taa { get; set; } = false;
     public bool DepthOfField { get; set; } = false;
     /// <summary>0: fixed pixel budget, 1: native display resolution, 2: manual spatial scale.</summary>
-    public int ResolutionMode { get; set; } = RenderResolution.Auto;
+    public int ResolutionMode { get; set; } = RenderResolution.Native;
     public float ManualRenderScale { get; set; } = 1f;
     public bool Sparks { get; set; } = true;
     public bool Smoke { get; set; } = true;
@@ -51,11 +51,18 @@ public sealed class RenderSettings
         settings.BeadDetail=Mathf.Clamp(config.GetValue("welding","bead_detail",settings.BeadDetail).AsInt32(),0,2);
         // Replace the previous unstable screen-space defaults once, including
         // existing installations. Other operator preferences remain intact.
-        if(config.GetValue("render","revision",0).AsInt32()<RenderingRevision)
+        int revision=config.GetValue("render","revision",0).AsInt32();
+        if(revision<2)
         {
             settings.Ssr=false;settings.Ssil=false;
-            settings.Save();
         }
+        if(revision<3)
+        {
+            settings.ResolutionMode=RenderResolution.Native;settings.ManualRenderScale=1;
+            settings.Taa=false;settings.DepthOfField=false;settings.Fog=false;
+            settings.Ssr=false;settings.Ssil=false;settings.Msaa=1;
+        }
+        if(revision<RenderingRevision)settings.Save();
         return settings;
     }
 

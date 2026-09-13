@@ -21,6 +21,8 @@ public partial class WeldingWorkflowChecks : Node
     {
         try
         {
+            GetWindow().Size=new Vector2I(1440,900);
+            await Frame();
             var main = GD.Load<PackedScene>("res://Scenes/Main.tscn").Instantiate<Main>();
             AddChild(main);
             await Frame();

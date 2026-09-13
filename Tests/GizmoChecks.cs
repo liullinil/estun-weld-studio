@@ -12,6 +12,8 @@ public partial class GizmoChecks : Node
     {
         try
         {
+            GetWindow().Size=new Vector2I(1440,900);
+            await ToSignal(GetTree(),SceneTree.SignalName.ProcessFrame);
             var parent=new Node3D {Rotation=new Vector3(.17f,.33f,-.24f)};AddChild(parent);
             var target=new Node3D();parent.AddChild(target);target.GlobalPosition=new Vector3(.35f,.7f,-.22f);
             var camera=new Camera3D {Position=new Vector3(3,2.7f,4),Current=true,HOffset=.49f,Fov=40};AddChild(camera);camera.LookAt(target.GlobalPosition);

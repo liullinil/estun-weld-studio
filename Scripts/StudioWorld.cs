@@ -20,7 +20,7 @@ public partial class StudioWorld : Node3D
     {
         BuildLighting();
         var concrete = new ShaderMaterial { Shader = GD.Load<Shader>("res://Shaders/Concrete.gdshader") };
-        Box(this, new Vector3(50, .15f, 50), new Vector3(0,-.18f,0), concrete, "Polished concrete");
+        Box(this, new Vector3(30, .15f, 30), new Vector3(0,-.18f,0), concrete, "Concrete floor");
         var dark = Metal("333b42", .0f, .52f);
         var steel = Metal("87919a", .86f, .34f);
         var black = Metal("151b20", .0f, .55f);
@@ -64,8 +64,8 @@ public partial class StudioWorld : Node3D
         var paint=Metal("48535d",.0f,.78f);
         for(int i=-4;i<=4;i++)
         {
-            Box(this,new Vector3(.008f,.001f,9),new Vector3(i,-.101f,0),paint);
-            Box(this,new Vector3(9,.001f,.008f),new Vector3(0,-.101f,i),paint);
+            Box(this,new Vector3(.003f,.001f,9),new Vector3(i,-.101f,0),paint);
+            Box(this,new Vector3(9,.001f,.003f),new Vector3(0,-.101f,i),paint);
         }
         var amber=Metal("be914b",.25f,.44f);
         foreach(var corner in new[]{new Vector3(-1.4f,-.099f,-1.4f),new Vector3(1.4f,-.099f,-1.4f),new Vector3(-1.4f,-.099f,1.4f),new Vector3(1.4f,-.099f,1.4f)})
@@ -121,7 +121,7 @@ public partial class StudioWorld : Node3D
             AmbientLightSource=Godot.Environment.AmbientSource.Sky,AmbientLightEnergy=.10f,
             ReflectedLightSource=Godot.Environment.ReflectionSource.Sky,
             TonemapMode=Godot.Environment.ToneMapper.Aces,TonemapExposure=.92f,
-            SsaoEnabled=true,SsaoRadius=.25f,SsaoIntensity=1.0f,SsaoPower=1.2f,
+            SsaoEnabled=true,SsaoRadius=.18f,SsaoIntensity=.85f,SsaoPower=1.15f,
             SsilEnabled=false,SsilIntensity=.22f,SsilRadius=1.5f,
             SsrEnabled=false,SsrMaxSteps=128,SsrFadeIn=.15f,SsrFadeOut=2.0f,SsrDepthTolerance=.08f,
             GlowEnabled=true,GlowIntensity=.30f,GlowBloom=.035f,GlowHdrThreshold=1.5f,
@@ -132,7 +132,7 @@ public partial class StudioWorld : Node3D
         Spot("Cold rim",new Vector3(-1.0f,3.8f,-3.2f),new Vector3(.7f,1.4f,0),new Color("a0c7fa"),2.2f,60,10,.7f);
         Spot("Front fill",new Vector3(4.0f,2.8f,1.5f),new Vector3(.8f,1,0),new Color("d8e8f3"),.65f,65,9,1.5f);
         Spot("Left bounce",new Vector3(-3.2f,2.5f,1.2f),new Vector3(0,1.0f,0),new Color("fff0d3"),.8f,64,10,.8f);
-        var sun=new DirectionalLight3D {Name="Ceiling bounce",RotationDegrees=new Vector3(-68,-25,0),LightColor=new Color("b9c6d0"),LightEnergy=.20f,ShadowEnabled=true,DirectionalShadowMaxDistance=18,LightAngularDistance=.5f};
+        var sun=new DirectionalLight3D {Name="Ceiling bounce",RotationDegrees=new Vector3(-68,-25,0),LightColor=new Color("b9c6d0"),LightEnergy=.20f,ShadowEnabled=false,DirectionalShadowMaxDistance=8,LightAngularDistance=.5f};
         AddChild(sun);
         var probe=new ReflectionProbe {Name="Stage reflections",Position=new Vector3(0,2.5f,0),Size=new Vector3(24,5.2f,11.2f),Intensity=.70f,CullMask=2,BoxProjection=true,Interior=false,AmbientMode=ReflectionProbe.AmbientModeEnum.Disabled,MeshLodThreshold=0,UpdateMode=ReflectionProbe.UpdateModeEnum.Once};
         AddChild(probe);
@@ -145,7 +145,9 @@ public partial class StudioWorld : Node3D
     }
     private void Spot(string name,Vector3 pos,Vector3 target,Color color,float energy,float angle,float range,float size)
     {
-        var light=new SpotLight3D {Name=name,Position=pos,LightColor=color,LightEnergy=energy*.85f,SpotAngle=angle,SpotRange=range,SpotAttenuation=.65f,ShadowEnabled=true,LightSize=size*.09f,ShadowBias=.025f,ShadowNormalBias=.5f};
+        bool castsShadow=name=="Key softbox" || name=="Cold rim";
+        var light=new SpotLight3D {Name=name,Position=pos,LightColor=color,LightEnergy=energy*.85f,SpotAngle=angle,SpotRange=range,SpotAttenuation=.65f,ShadowEnabled=castsShadow,LightSize=size*.07f,ShadowBias=.055f,ShadowNormalBias=1.0f};
+        light.SetMeta("studio_casts_shadow",castsShadow);
         AddChild(light); light.LookAt(target,Vector3.Up);
     }
     private static void MarkStaticReflectionLayer(Node parent)

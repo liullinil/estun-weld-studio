@@ -199,8 +199,8 @@ public partial class RenderResolutionChecks : Node
         previous.SetValue("render","ssr",true);previous.SetValue("welding","smoke",false);
         Require(previous.Save(path)==Error.Ok,"Previous-version configuration fixture is written");
         loaded=RenderSettings.Load();
-        Require(loaded.ResolutionMode==0 && Mathf.IsEqualApprox(loaded.ManualRenderScale,1),
-            "Existing installations receive automatic resolution without requiring a settings reset");
+        Require(loaded.ResolutionMode==1 && Mathf.IsEqualApprox(loaded.ManualRenderScale,1),
+            "Default rendering is native resolution without requiring a settings reset");
         Require(Mathf.IsEqualApprox(loaded.Exposure,1.09f) && loaded.Msaa==3 && loaded.Ssr && !loaded.Smoke,
             "Adding automatic resolution keeps existing effect preferences");
     }

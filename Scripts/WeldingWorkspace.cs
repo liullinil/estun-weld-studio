@@ -1,6 +1,5 @@
 using Godot;
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -12,6 +11,7 @@ public partial class WeldingWorkspace : Node
 {
     public event Action<string>? Toast;
     public event Action<Vector3>? FocusRequested;
+    public event Action? PanelVisibilityChanged;
     public CadPart? Part {get;private set;}
     public WeldProgram? Program {get;private set;}
     public bool IsBusy {get;private set;}
@@ -21,14 +21,17 @@ public partial class WeldingWorkspace : Node
     private Node3D _scene=null!;private Control _ui=null!;private TransformGizmo _gizmo=null!;
     private Panel _panel=null!;private VBoxContainer _list=null!;private Label _status=null!,_file=null!,_counts=null!,_progress=null!;
     private SpinBox _min=null!,_max=null!;private readonly SpinBox[] _pose=new SpinBox[6];
-    private Button _run=null!,_plan=null!;private CheckBox _concave=null!;
+    private Button _run=null!,_plan=null!,_move=null!,_rotate=null!;private CheckBox _concave=null!;
     private CancellationTokenSource? _cancel;private int _revision,_motionIndex;
     private bool _exiting;
     private float _elapsed;private float[] _motionStart=Array.Empty<float>();private bool _syncPose;
     private CollisionScene? _collision;private RobotCapsule[]? _capsules;
     private readonly System.Collections.Concurrent.ConcurrentQueue<string> _messages=new();
-    private readonly Color _ink=new("e7efef"),_muted=new("96a9b3"),_accent=new("f4b65c");
+    private readonly Color _ink=new("e7efef"),_muted=new("96a9b3");
     public bool EditingVisible=>_panel.Visible;
+    public Control Panel=>_panel;
+    public string StatusText=>_status.Text;
+    public string ProgressText=>_progress.Text;
     public Task PlanningTask {get;private set;}=Task.CompletedTask;
     public void Build(Node3D scene,Control ui,RobotModel robot,RobotController controller,Camera3D camera)
     {
@@ -39,41 +42,73 @@ public partial class WeldingWorkspace : Node
     }
     private void BuildPanel()
     {
-        _panel=new Panel {Name="WeldingWorkspace",Position=new Vector2(28,300),Size=new Vector2(320,628),MouseFilter=Control.MouseFilterEnum.Stop};
-        _panel.AddThemeStyleboxOverride("panel",new StyleBoxFlat {BgColor=new Color("1c2730"),BorderColor=new Color("40515c"),BorderWidthBottom=1,BorderWidthLeft=1,BorderWidthRight=1,BorderWidthTop=1,CornerRadiusBottomLeft=10,CornerRadiusBottomRight=10,CornerRadiusTopLeft=10,CornerRadiusTopRight=10});_ui.AddChild(_panel);
-        LabelAt(_panel,"WELD PREPARATION",16,13,277,27,17,_ink);
-        ButtonAt(_panel,"×",278,10,27,27,()=>{_panel.Hide();_gizmo.Active=false;});
-        ButtonAt(_panel,"IMPORT STEP",16,53,139,35,ChooseStep);ButtonAt(_panel,"LOAD SAMPLE",166,53,138,35,LoadSample);
-        _file=LabelAt(_panel,"No workpiece loaded",16,96,286,25,12,_muted);_file.TextOverrunBehavior=TextServer.OverrunBehavior.TrimEllipsis;
-        LabelAt(_panel,"PART TRANSFORM",16,131,285,20,10,_accent);
-        ButtonAt(_panel,"MOVE  /  W",16,157,139,30,()=>{if(IsBusy||IsSimulating)return;_gizmo.RotationMode=false;_gizmo.Active=true;});
-        ButtonAt(_panel,"ROTATE  /  E",166,157,138,30,()=>{if(IsBusy||IsSimulating)return;_gizmo.RotationMode=true;_gizmo.Active=true;});
-        for(int i=0;i<6;i++)
+        _panel=new Panel {Name="WeldingWorkspace",Size=new Vector2(320,720),MouseFilter=Control.MouseFilterEnum.Stop};
+        _panel.AddThemeStyleboxOverride("panel",new StyleBoxFlat {BgColor=new Color("1b2229"),BorderColor=new Color("343f48"),BorderWidthBottom=1,BorderWidthLeft=1,BorderWidthRight=1,BorderWidthTop=1,CornerRadiusBottomLeft=8,CornerRadiusBottomRight=8,CornerRadiusTopLeft=8,CornerRadiusTopRight=8});
+        _ui.AddChild(_panel);
+        var margin=new MarginContainer {Name="PanelInsets"};_panel.AddChild(margin);margin.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+        foreach(string edge in new[]{"left","top","right","bottom"})margin.AddThemeConstantOverride("margin_"+edge,14);
+        var layout=Column(margin,10);layout.Name="PreparationLayout";
+        var header=Row(layout);Text(header,"Weld preparation",15,_ink).SizeFlagsHorizontal=Control.SizeFlags.ExpandFill;
+        var close=Button(header,"×",()=>SetPanelVisible(false),false);close.CustomMinimumSize=new Vector2(30,30);close.TooltipText="Hide weld preparation";
+        Divider(layout);
+
+        // Containers use real window pixels. On short displays only the form
+        // scrolls, leaving the close and execution controls directly accessible.
+        var formScroll=new ScrollContainer {Name="PreparationScroll",HorizontalScrollMode=ScrollContainer.ScrollMode.Disabled,SizeFlagsVertical=Control.SizeFlags.ExpandFill,SizeFlagsHorizontal=Control.SizeFlags.ExpandFill};layout.AddChild(formScroll);
+        var form=Column(formScroll,9);form.SizeFlagsVertical=Control.SizeFlags.ExpandFill;
+        var importRow=Row(form);Button(importRow,"Import STEP",ChooseStep);Button(importRow,"Load sample",LoadSample);
+        _file=Text(form,"No workpiece loaded",13,_muted);_file.TextOverrunBehavior=TextServer.OverrunBehavior.TrimEllipsis;_file.TooltipText="Import a STEP workpiece to position it and find weld candidates.";
+        Section(form,"Part placement");
+        var modeRow=Row(form);
+        _move=Button(modeRow,"Move  ·  W",()=>SetGizmoMode(false));_rotate=Button(modeRow,"Rotate  ·  E",()=>SetGizmoMode(true));
+        _move.ToggleMode=true;_rotate.ToggleMode=true;_move.ButtonPressed=true;
+        var poseGrid=new GridContainer {Name="PartCoordinates",Columns=3,SizeFlagsHorizontal=Control.SizeFlags.ExpandFill};poseGrid.AddThemeConstantOverride("h_separation",8);poseGrid.AddThemeConstantOverride("v_separation",6);form.AddChild(poseGrid);
+        Text(poseGrid,"",12,_muted);Text(poseGrid,"Position · mm",12,_muted);Text(poseGrid,"Rotation · °",12,_muted);
+        for(int i=0;i<3;i++)
         {
-            int axis=i;float x=16+(i%3)*98,y=i<3?209:247;
-            LabelAt(_panel,i<3?new[]{"X mm","Y mm","Z mm"}[i]:new[]{"RX °","RY °","RZ °"}[i-3],x,y-15,95,16,9,_muted);
-            var spin=new SpinBox {Position=new Vector2(x,y),Size=new Vector2(90,25),MinValue=i<3?-10000:-360,MaxValue=i<3?10000:360,Step=i<3?1:1,AllowGreater=false,AllowLesser=false};
-            spin.AddThemeFontSizeOverride("font_size",11);_panel.AddChild(spin);_pose[i]=spin;spin.ValueChanged+=v=>ApplyPose(axis,(float)v);
+            Text(poseGrid,new[]{"X","Y","Z"}[i],13,_muted).CustomMinimumSize=new Vector2(20,30);
+            foreach(int axis in new[]{i,i+3})
+            {
+                var spin=Spin(poseGrid,0,axis<3?-10000:-360,axis<3?10000:360);spin.Name="PartPose"+axis;spin.TooltipText=(axis<3?"Position ":"Rotation ")+new[]{"X","Y","Z"}[i]+(axis<3?" in millimeters":" in degrees");
+                _pose[axis]=spin;spin.ValueChanged+=v=>ApplyPose(axis,(float)v);
+            }
         }
-        LabelAt(_panel,"SEAM ANGLE RANGE",16,288,220,20,10,_accent);
-        _min=Spin(16,316,99,85,0,180);_max=Spin(126,316,99,95,0,180);
-        LabelAt(_panel,"to",118,318,10,23,10,_muted);LabelAt(_panel,"degrees",237,318,72,23,11,_muted);
+        Section(form,"Seam detection");
+        var angleRow=Row(form);_min=Spin(angleRow,85,0,180);_min.Suffix="°";_min.TooltipText="Minimum seam angle";
+        Text(angleRow,"to",13,_muted);_max=Spin(angleRow,95,0,180);_max.Suffix="°";_max.TooltipText="Maximum seam angle";
         _min.ValueChanged+=_=>FilterChanged();_max.ValueChanged+=_=>FilterChanged();
-        _concave=new CheckBox {Text="Concave / contact only",Position=new Vector2(11,353),Size=new Vector2(235,29),ButtonPressed=true};_concave.AddThemeFontSizeOverride("font_size",11);_panel.AddChild(_concave);_concave.Toggled+=_=>FilterChanged();
-        ButtonAt(_panel,"RESTORE",234,352,71,27,()=>{Part?.Restore();Invalidate();RefreshList();});
-        _counts=LabelAt(_panel,"Candidates appear after import",16,391,287,23,11,_muted);
-        var scroll=new ScrollContainer {Position=new Vector2(14,420),Size=new Vector2(294,105),HorizontalScrollMode=ScrollContainer.ScrollMode.Disabled};_panel.AddChild(scroll);
-        _list=new VBoxContainer {SizeFlagsHorizontal=Control.SizeFlags.ExpandFill};scroll.AddChild(_list);
-        _plan=ButtonAt(_panel,"GENERATE PROGRAM",16,538,288,34,Generate);
-        _run=ButtonAt(_panel,"SIMULATE",16,581,139,33,Run);ButtonAt(_panel,"EXPORT",166,581,138,33,Export);
-        _status=LabelAt(_ui,"",361,781,722,27,12,_ink);_progress=LabelAt(_ui,"",361,811,722,24,11,_muted);
-        _status.HorizontalAlignment=HorizontalAlignment.Center;_progress.HorizontalAlignment=HorizontalAlignment.Center;
+        _concave=new CheckBox {Text="Concave / contact only",ButtonPressed=true,CustomMinimumSize=new Vector2(0,30)};_concave.AddThemeFontSizeOverride("font_size",13);form.AddChild(_concave);_concave.Toggled+=_=>FilterChanged();
+        var candidatesHeader=Row(form);_counts=Text(candidatesHeader,"No candidate seams",12,_muted);_counts.SizeFlagsHorizontal=Control.SizeFlags.ExpandFill;_counts.TextOverrunBehavior=TextServer.OverrunBehavior.TrimEllipsis;
+        var restore=Button(candidatesHeader,"Restore",()=>{Part?.Restore();Invalidate();RefreshList();},false);restore.CustomMinimumSize=new Vector2(70,30);restore.TooltipText="Restore all excluded seam candidates";
+        var seamScroll=new ScrollContainer {Name="SeamCandidates",CustomMinimumSize=new Vector2(0,128),HorizontalScrollMode=ScrollContainer.ScrollMode.Disabled,SizeFlagsHorizontal=Control.SizeFlags.ExpandFill,SizeFlagsVertical=Control.SizeFlags.ExpandFill};form.AddChild(seamScroll);
+        _list=Column(seamScroll,4);
+        Divider(layout);
+        _plan=Button(layout,"GENERATE PROGRAM",Generate);_plan.CustomMinimumSize=new Vector2(0,36);
+        var playback=Row(layout);_run=Button(playback,"SIMULATE",Run);Button(playback,"EXPORT",Export);
+        // Main displays these messages in its responsive status bar; keep the
+        // existing update paths without placing free-floating viewport labels.
+        _status=Text(_panel,"",13,_ink);_status.Name="WeldStatus";_status.Hide();
+        _progress=Text(_panel,"",12,_muted);_progress.Name="WeldProgress";_progress.Hide();
     }
-    private SpinBox Spin(float x,float y,float width,float value,float min,float max)
+    private SpinBox Spin(Control parent,float value,float min,float max)
     {
-        var box=new SpinBox {Position=new Vector2(x,y),Size=new Vector2(width,28),Value=value,MinValue=min,MaxValue=max,Step=1};box.AddThemeFontSizeOverride("font_size",12);_panel.AddChild(box);return box;
+        var box=new SpinBox {CustomMinimumSize=new Vector2(80,30),SizeFlagsHorizontal=Control.SizeFlags.ExpandFill,Value=value,MinValue=min,MaxValue=max,Step=1,AllowGreater=false,AllowLesser=false};
+        box.AddThemeFontSizeOverride("font_size",14);
+        var input=box.GetLineEdit();input.AddThemeFontSizeOverride("font_size",14);input.AddThemeColorOverride("font_color",_ink);input.Alignment=HorizontalAlignment.Right;
+        input.AddThemeStyleboxOverride("normal",ButtonStyle("202a32","394650"));input.AddThemeStyleboxOverride("focus",ButtonStyle("26323c","bd9657"));
+        parent.AddChild(box);return box;
     }
-    public void Toggle(){_panel.Visible=!_panel.Visible;_gizmo.Active=_panel.Visible && Part!=null&&!IsBusy&&!IsSimulating;}
+    public void Toggle()=>SetPanelVisible(!_panel.Visible);
+    public void SetPanelVisible(bool visible)
+    {
+        bool changed=_panel.Visible!=visible;_panel.Visible=visible;_gizmo.Active=visible&&Part!=null&&!IsBusy&&!IsSimulating;
+        if(changed)PanelVisibilityChanged?.Invoke();
+    }
+    private void SetGizmoMode(bool rotate)
+    {
+        if(IsBusy||IsSimulating)return;
+        _gizmo.RotationMode=rotate;_gizmo.Active=_panel.Visible&&Part!=null;_move.SetPressedNoSignal(!rotate);_rotate.SetPressedNoSignal(rotate);
+    }
     private void ChooseStep()
     {
         if(IsBusy)return;
@@ -97,8 +132,8 @@ public partial class WeldingWorkspace : Node
             if(_exiting)return;
             Part?.QueueFree();Part=new CadPart {Name="STEP assembly"};_scene.AddChild(Part);Part.Build(doc,_camera);
             Part.Position=new Vector3(.85f,.27f,0)-doc.Bounds.GetCenter();Part.Position+=Vector3.Up*(doc.Bounds.Size.Y*.5f);
-            _gizmo.Target=Part;_gizmo.Active=true;_panel.Show();
-            Part.SeamSelectionChanged+=RefreshList;_file.Text=doc.Name+"  ·  STEP";
+            _gizmo.Target=Part;SetPanelVisible(true);_gizmo.Active=true;
+            Part.SeamSelectionChanged+=RefreshList;_file.Text=doc.Name+"  ·  STEP";_file.TooltipText=$"{doc.Name} · {doc.SolidCount} solids · {doc.TriangleCount:N0} triangles";
             Invalidate();SyncPose();FilterChanged();
             Toast?.Invoke($"STEP imported · {doc.SolidCount} solids · {doc.TriangleCount:N0} triangles");
             _messages.Enqueue($"{doc.Seams.Count} angular edge candidates · review before generating");
@@ -138,14 +173,12 @@ public partial class WeldingWorkspace : Node
         if(Part==null)return;var seams=Part.Candidates();_counts.Text=$"{seams.Count} seams  /  {Part.Document.Seams.Count(s=>s.Deleted)} excluded";
         foreach(var seam in seams.Take(100))
         {
-            string id=seam.Id;var row=new HBoxContainer();_list.AddChild(row);
-            var button=new Button {Text=$"{seam.Id}   {seam.Length*1000:0} mm   {seam.AngleDegrees:0}°",SizeFlagsHorizontal=Control.SizeFlags.ExpandFill,Alignment=HorizontalAlignment.Left,FocusMode=Control.FocusModeEnum.None};
-            button.AddThemeFontSizeOverride("font_size",11);row.AddChild(button);button.Pressed+=()=>Part.Select(id);
+            string id=seam.Id;var row=Row(_list);
+            var button=Button(row,$"{seam.Id}  ·  {seam.Length*1000:0} mm  ·  {seam.AngleDegrees:0}°",()=>Part.Select(id));button.Alignment=HorizontalAlignment.Left;button.ClipText=true;
             var result=Program?.Seams.FirstOrDefault(s=>s.Id==id);button.TooltipText=result?.Reason??seam.Kind;
             if(result!=null)button.Modulate=result.State==WeldSeamState.Ready?new Color("8bdfb6"):new Color("ed868a");
             if(id==Part.SelectedSeam)button.Modulate=new Color("ffce7f");
-            var remove=new Button {Text="×",CustomMinimumSize=new Vector2(28,25),FocusMode=Control.FocusModeEnum.None,TooltipText="Exclude this candidate seam"};row.AddChild(remove);
-            remove.Pressed+=()=>{seam.Deleted=true;Invalidate();RefreshList();};
+            var remove=Button(row,"×",()=>{seam.Deleted=true;Invalidate();RefreshList();},false);remove.CustomMinimumSize=new Vector2(30,32);remove.TooltipText="Exclude this candidate seam";
         }
     }
     public void Generate(){if(IsBusy){_cancel?.Cancel();return;}PlanningTask=GenerateAsync();}
@@ -159,16 +192,9 @@ public partial class WeldingWorkspace : Node
         {
             Transform3D partTransform=_robot.GlobalTransform.AffineInverse()*Part.GlobalTransform;
             Vector3[] triangles=Part.Document.Indices.Select(i=>partTransform*Part.Document.Vertices[i]).ToArray();
-            var linkVertices=new Dictionary<int,Vector3[]>();
-            if(_capsules==null)
-            {
-                foreach(var mesh in Descendants(_robot).OfType<MeshInstance3D>())
-                {
-                    if(!mesh.Name.ToString().StartsWith("CAD_Link"))continue;int link=int.Parse(mesh.Name.ToString()[8].ToString());
-                    Vector3[] points=mesh.Mesh.SurfaceGetArrays(0)[(int)Mesh.ArrayType.Vertex].AsVector3Array();
-                    linkVertices[link]=linkVertices.TryGetValue(link,out var old)?old.Concat(points).ToArray():points;
-                }
-            }
+            // Collision fitting needs the unchanged source triangles, while the
+            // renderer can share vertices through its lossless index buffers.
+            var linkVertices=_capsules==null?_robot.GetLinkTriangles():null;
             var rest=_controller.RestTransforms;var tool=_controller.ToolTransform;float[] start=_controller.AnglesDegrees;
             var plinth=new CylinderMesh {TopRadius=.70f,BottomRadius=.70f,Height=.201f,RadialSegments=64};
             Vector3[] fixtures=plinth.GetFaces().Select(p=>p+new Vector3(0,-.1095f,0)).ToArray();
@@ -177,7 +203,7 @@ public partial class WeldingWorkspace : Node
             {
                 if(_capsules==null)
                 {
-                    var caps=CollisionScene.CreateRobotCapsules(linkVertices).ToList();
+                    var caps=CollisionScene.CreateRobotCapsules(linkVertices!).ToList();
                     caps.AddRange(WeldTorch.CollisionVolumes());_capsules=caps.ToArray();
                 }
                 _collision=new CollisionScene(triangles,_capsules,rest,staticTriangles:fixtures);
@@ -238,8 +264,8 @@ public partial class WeldingWorkspace : Node
         if(Part==null)return;
         if(input is InputEventKey {Pressed:true,Echo:false} key)
         {
-            if(key.Keycode==Key.W && !IsBusy&&!IsSimulating){_gizmo.RotationMode=false;_gizmo.Active=true;}
-            if(key.Keycode==Key.E && !IsBusy&&!IsSimulating){_gizmo.RotationMode=true;_gizmo.Active=true;}
+            if(key.Keycode==Key.W && !IsBusy&&!IsSimulating)SetGizmoMode(false);
+            if(key.Keycode==Key.E && !IsBusy&&!IsSimulating)SetGizmoMode(true);
             if(key.Keycode==Key.Delete && Part.DeleteSelected()){Invalidate();RefreshList();GetViewport().SetInputAsHandled();}
         }
         if(input is InputEventMouseButton {ButtonIndex:MouseButton.Left,Pressed:true} click && !IsBusy)
@@ -249,7 +275,36 @@ public partial class WeldingWorkspace : Node
         }
     }
     public override void _ExitTree(){_exiting=true;_cancel?.Cancel();}
-    private static IEnumerable<Node> Descendants(Node node){foreach(Node child in node.GetChildren()){yield return child;foreach(var nested in Descendants(child))yield return nested;}}
-    private Label LabelAt(Control p,string text,float x,float y,float w,float h,int size,Color color){var label=new Label {Text=text,Position=new(x,y),Size=new(w,h),MouseFilter=Control.MouseFilterEnum.Ignore};label.AddThemeFontSizeOverride("font_size",size);label.AddThemeColorOverride("font_color",color);p.AddChild(label);return label;}
-    private Button ButtonAt(Control p,string text,float x,float y,float w,float h,Action action){var b=new Button {Text=text,Position=new(x,y),Size=new(w,h),FocusMode=Control.FocusModeEnum.None};b.AddThemeFontSizeOverride("font_size",11);b.AddThemeStyleboxOverride("normal",new StyleBoxFlat {BgColor=new Color("31424d"),CornerRadiusBottomLeft=5,CornerRadiusBottomRight=5,CornerRadiusTopLeft=5,CornerRadiusTopRight=5});b.AddThemeStyleboxOverride("hover",new StyleBoxFlat {BgColor=new Color("46606c")});p.AddChild(b);b.Pressed+=action;return b;}
+    private static VBoxContainer Column(Control parent,int spacing)
+    {
+        var column=new VBoxContainer {SizeFlagsHorizontal=Control.SizeFlags.ExpandFill};column.AddThemeConstantOverride("separation",spacing);parent.AddChild(column);return column;
+    }
+    private static HBoxContainer Row(Control parent)
+    {
+        var row=new HBoxContainer {SizeFlagsHorizontal=Control.SizeFlags.ExpandFill};row.AddThemeConstantOverride("separation",8);parent.AddChild(row);return row;
+    }
+    private Label Text(Control parent,string text,int size,Color color)
+    {
+        var label=new Label {Text=text,MouseFilter=Control.MouseFilterEnum.Ignore};label.AddThemeFontSizeOverride("font_size",size);label.AddThemeColorOverride("font_color",color);parent.AddChild(label);return label;
+    }
+    private void Section(Control parent,string title)
+    {
+        Divider(parent);Text(parent,title,14,_ink);
+    }
+    private static void Divider(Control parent)
+    {
+        var line=new HSeparator();line.AddThemeStyleboxOverride("separator",new StyleBoxLine {Color=new Color("343f48"),Thickness=1});parent.AddChild(line);
+    }
+    private Button Button(Control parent,string text,Action action,bool expand=true)
+    {
+        var button=new Button {Text=text,CustomMinimumSize=new Vector2(0,32),SizeFlagsHorizontal=expand?Control.SizeFlags.ExpandFill:Control.SizeFlags.Fill,FocusMode=Control.FocusModeEnum.None};
+        button.AddThemeFontSizeOverride("font_size",14);button.AddThemeColorOverride("font_color",_ink);button.AddThemeColorOverride("font_hover_color",Colors.White);button.AddThemeColorOverride("font_pressed_color",Colors.White);
+        button.AddThemeStyleboxOverride("normal",ButtonStyle("29343d","394650"));button.AddThemeStyleboxOverride("hover",ButtonStyle("364550","526472"));button.AddThemeStyleboxOverride("pressed",ButtonStyle("3b454a","bd9657"));button.AddThemeStyleboxOverride("disabled",ButtonStyle("252d34","313a42"));
+        parent.AddChild(button);button.Pressed+=action;return button;
+    }
+    private static StyleBoxFlat ButtonStyle(string background,string border)=>new()
+    {
+        BgColor=new Color(background),BorderColor=new Color(border),BorderWidthLeft=1,BorderWidthTop=1,BorderWidthRight=1,BorderWidthBottom=1,
+        CornerRadiusBottomLeft=4,CornerRadiusBottomRight=4,CornerRadiusTopLeft=4,CornerRadiusTopRight=4,ContentMarginLeft=8,ContentMarginRight=8,ContentMarginTop=4,ContentMarginBottom=4
+    };
 }

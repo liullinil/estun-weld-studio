@@ -14,9 +14,9 @@ window/size/viewport_width=1600
 window/size/viewport_height=1000
 window/size/window_width_override=1440
 window/size/window_height_override=900
-window/size/min_width=1120
+window/size/min_width=1180
 window/size/min_height=700
-window/stretch/mode="canvas_items"
+window/stretch/mode="disabled"
 
 [dotnet]
 project/assembly_name="EstunStudio"
@@ -26,7 +26,7 @@ renderer/rendering_method="forward_plus"
 renderer/rendering_method.mobile="forward_plus"
 rendering_device/driver.windows="vulkan"
 textures/default_filters/use_nearest_mipmap_filter=false
-anti_aliasing/quality/msaa_3d=2
+anti_aliasing/quality/msaa_3d=1
 anti_aliasing/quality/use_taa=false
 lights_and_shadows/directional_shadow/size=4096
 lights_and_shadows/positional_shadow/atlas_size=4096

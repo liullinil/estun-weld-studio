@@ -18,6 +18,8 @@ public partial class SceneChecks : Node
     {
         try
         {
+            // With native-pixel rendering the headless backend otherwise defaults to 64×64.
+            GetWindow().Size = new Vector2I(1440, 900);
             var main = GD.Load<PackedScene>("res://Scenes/Main.tscn").Instantiate<Main>();
             AddChild(main);
             await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
@@ -103,8 +105,9 @@ public partial class SceneChecks : Node
         Require(jog.Length == 12, "Shipping pendant provides both jog directions on all six rows");
         Require(jog.All(b => Contains(pendant.GetGlobalRect(), b.GetGlobalRect())),
             "All jog hitboxes are contained by the pendant enclosure");
-        Require(Contains(workspace.GetGlobalRect(), pendant.GetGlobalRect()),
-            "Pendant enclosure fits the shipping logical viewport");
+        var dock = pendant.GetParent<ScrollContainer>();
+        Require(Contains(workspace.GetGlobalRect(), dock.GetGlobalRect()),
+            "Pendant dock fits the native viewport; short windows can scroll its contents");
         Require(jog.All(b => b.Size.X >= 48 && b.Size.Y >= 32), "Jog targets retain useful pointer hitbox sizes");
         Require(controls.OfType<Label>().Count(l => l.Text is "J1" or "J2" or "J3" or "J4" or "J5" or "J6") == 6,
             "All joint row labels are present");
@@ -115,7 +118,7 @@ public partial class SceneChecks : Node
     private void CheckPendantBindings(PendantPanel pendant, RobotController controller)
     {
         var buttons = Descendants(pendant).OfType<Button>().Where(b => b.Text is "+" or "−")
-            .OrderBy(b => b.Position.Y).ThenBy(b => b.Position.X).ToArray();
+            .OrderBy(b => b.GlobalPosition.Y).ThenBy(b => b.GlobalPosition.X).ToArray();
         controller.SetDrives(true);
         for (int axis = 0; axis < 6; axis++)
         for (int directionIndex = 0; directionIndex < 2; directionIndex++)

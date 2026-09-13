@@ -54,7 +54,7 @@ public partial class ViewportChecks : Node
             var camera=new Camera3D {Position=new Vector3(3,2,3)};AddChild(camera);
             CheckReflectionIsolation(world,camera);
             effects=new EffectsPanel();layer.AddChild(effects);effects.Build(world,camera);effects.ResetToCrisp();
-            Require(GetViewport().Msaa3D==Viewport.Msaa.Msaa4X && !GetViewport().UseTaa,"Crisp defaults use 4× MSAA without temporal blur");
+            Require(GetViewport().Msaa3D==Viewport.Msaa.Msaa2X && !GetViewport().UseTaa && Mathf.IsEqualApprox(GetViewport().Scaling3DScale,1),"Crisp defaults use native-resolution 2× MSAA without temporal blur");
             var attributes=(CameraAttributesPractical)camera.Attributes;
             Require(!attributes.DofBlurNearEnabled && !attributes.DofBlurFarEnabled && attributes.DofBlurAmount==0,"Robot is fully in focus by default");
             Require(!world.Environment.FogEnabled,"Inspection defaults have no haze");
@@ -97,8 +97,8 @@ public partial class ViewportChecks : Node
         Require(legacy.Save(path)==Error.Ok,"Legacy rendering configuration fixture is written");
         var migrated=RenderSettings.Load();
         Require(!migrated.Ssr && !migrated.Ssil,"Upgrade disables the old artifact-prone reflection and indirect-light defaults");
-        Require(!migrated.Ssao && Mathf.IsEqualApprox(migrated.Exposure,1.27f) && !migrated.Bloom && Mathf.IsEqualApprox(migrated.BloomStrength,.38f) && migrated.Taa && migrated.Msaa==3 && !migrated.Smoke && migrated.BeadDetail==1,
-            "Migration preserves unrelated user lighting, clarity and welding preferences");
+        Require(!migrated.Ssao && Mathf.IsEqualApprox(migrated.Exposure,1.27f) && !migrated.Bloom && Mathf.IsEqualApprox(migrated.BloomStrength,.38f) && !migrated.Taa && migrated.Msaa==1 && migrated.ResolutionMode==RenderResolution.Native && !migrated.DepthOfField && !migrated.Smoke && migrated.BeadDetail==1,
+            "Sharp migration removes blur/upscaling while preserving exposure and welding preferences");
         migrated.Save();
         var current=RenderSettings.Load();
         Require(!current.Ssr && !current.Ssil && Mathf.IsEqualApprox(current.Exposure,1.27f),"Migrated settings persist across a second load");

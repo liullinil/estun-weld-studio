@@ -4,328 +4,266 @@ using System.Globalization;
 
 namespace EstunStudio;
 
-/// <summary>A virtual teach pendant with press-and-hold jogging and one-click program playback.</summary>
+/// <summary>A native-pixel pendant with responsive containers and hold-to-jog controls.</summary>
 public partial class PendantPanel : Control
 {
     public event Action<string>? Toast;
     public event Action? HomeViewRequested;
-
+    public event Action? CloseRequested;
     private enum JogFrame { Joint, World, Tool }
-
-    private static readonly Color Ink = new("#283337");
-    private static readonly Color Muted = new("#718084");
-    private static readonly Color Orange = new("#f49b4c");
-    private static readonly Color Green = new("#73d6ad");
-    private static readonly Color Screen = new("#e9eeeb");
-    private static readonly Color ScreenLine = new("#cbd4cf");
+    private static readonly Color Ink = new("#e7ecef"), Muted = new("#99a6ae");
+    private static readonly Color Orange = new("#eaa05b"), Green = new("#86c9a6");
+    private static readonly Color Surface = new("#222a30"), Border = new("#39434b");
     private static readonly string[] JointNames = { "J1", "J2", "J3", "J4", "J5", "J6" };
-    private static readonly string[] JointCaptions = { "BASE", "SHOULDER", "ELBOW", "WRIST 1", "WRIST 2", "FLANGE" };
+    private static readonly string[] JointCaptions = { "Base", "Shoulder", "Elbow", "Wrist 1", "Wrist 2", "Flange" };
     private static readonly string[] TcpNames = { "X", "Y", "Z", "A", "B", "C" };
-    private static readonly string[] TcpCaptions = { "POSITION", "POSITION", "POSITION", "ROLL", "PITCH", "YAW" };
-
+    private static readonly string[] TcpCaptions = { "Position X", "Position Y", "Position Z", "Roll", "Pitch", "Yaw" };
     private RobotController? _controller;
-    private Font? _font;
-    private Font? _semibold;
-    private readonly Label[] _axisNames = new Label[6];
-    private readonly Label[] _axisCaptions = new Label[6];
-    private readonly Label[] _axisValues = new Label[6];
-    private readonly Label[] _axisUnits = new Label[6];
-    private readonly Button[] _rowSelectors = new Button[6];
-    private readonly Button[] _tabs = new Button[3];
-    private Label _frameDescription = null!;
-    private Label _speedValue = null!;
-    private Label _statusLabel = null!;
-    private Label _waypointLabel = null!;
-    private Label _drivesCaption = null!;
-    private Label _runCaption = null!;
-    private Label _motionHint = null!;
-    private Button _drivesButton = null!;
-    private Button _stopButton = null!;
-    private Button _runButton = null!;
-    private Button _emergencyButton = null!;
+    private Font _font = null!, _semibold = null!;
+    private readonly Label[] _axisNames = new Label[6], _axisValues = new Label[6], _axisUnits = new Label[6];
+    private readonly Button[] _rowSelectors = new Button[6], _tabs = new Button[3];
+    private Label _frameDescription = null!, _speedValue = null!, _statusLabel = null!, _waypointLabel = null!;
+    private Label _drivesCaption = null!, _runCaption = null!, _motionHint = null!;
+    private Button _drivesButton = null!, _emergencyButton = null!;
     private HSlider _speedSlider = null!;
+    private VBoxContainer _content = null!;
     private JogFrame _frame;
-    private int _selectedAxis;
-    private int _pointerJogAxis = -1;
-    private int _keyboardJogDirection;
-    private bool _emergencyHovered;
-    private bool _lastEstop;
-    private bool _lastDrives;
+    private int _selectedAxis, _keyboardJogDirection, _pointerJogAxis = -1;
+    private bool _lastEstop, _lastDrives;
     private float _readoutTimer;
-    private double _pulseTime;
 
     public void Build(RobotController controller)
     {
         _controller = controller;
         Name = "TeachPendant";
         MouseFilter = MouseFilterEnum.Stop;
-        SetAnchorsAndOffsetsPreset(LayoutPreset.TopRight);
-        AnchorBottom = 1;
-        OffsetLeft = -468;
-        OffsetRight = -28;
-        OffsetTop = 112;
-        OffsetBottom = -70;
-        CustomMinimumSize = new Vector2(440, 818);
-
-        if (ResourceLoader.Exists("res://Assets/Fonts/Inter-Regular.ttf"))
-            _font = GD.Load<Font>("res://Assets/Fonts/Inter-Regular.ttf");
-        if (ResourceLoader.Exists("res://Assets/Fonts/Inter-SemiBold.ttf"))
-            _semibold = GD.Load<Font>("res://Assets/Fonts/Inter-SemiBold.ttf");
-        _font ??= ThemeDB.FallbackFont;
-        _semibold ??= _font;
-        _semibold = new FontVariation
-        {
-            BaseFont = _semibold,
-            VariationOpentype = new Godot.Collections.Dictionary { ["wght"] = 650 },
-        };
+        CustomMinimumSize = new Vector2(320, 0);
+        SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        _font = ResourceLoader.Exists("res://Assets/Fonts/Inter-Regular.ttf") ? GD.Load<Font>("res://Assets/Fonts/Inter-Regular.ttf") : ThemeDB.FallbackFont;
+        _semibold = ResourceLoader.Exists("res://Assets/Fonts/Inter-SemiBold.ttf") ? GD.Load<Font>("res://Assets/Fonts/Inter-SemiBold.ttf") : _font;
         AddThemeFontOverride("font", _font);
-
-        BuildEnclosureHeader();
-        BuildTouchscreen();
+        AddThemeFontSizeOverride("font_size", 14);
+        var surface = new PanelContainer { Name = "PendantSurface", MouseFilter = MouseFilterEnum.Stop };
+        AddChild(surface);
+        surface.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+        surface.AddThemeStyleboxOverride("panel", Flat(new Color("#1a2228"), 12, Border, 1));
+        var padding = new MarginContainer { MouseFilter = MouseFilterEnum.Pass };
+        SetMargins(padding, 14);
+        surface.AddChild(padding);
+        _content = new VBoxContainer { MouseFilter = MouseFilterEnum.Pass };
+        _content.AddThemeConstantOverride("separation", 10);
+        padding.AddChild(_content);
+        BuildHeader();
+        BuildJogControls();
+        BuildSpeedControl();
         BuildHardwareKeys();
         SelectFrame(JogFrame.Joint);
         RefreshState();
-        QueueRedraw();
+        // The parent owns position and available width; fonts never inherit a canvas scale.
+        _content.MinimumSizeChanged += UpdateMinimumHeight;
+        UpdateMinimumHeight();
     }
 
-    private void BuildEnclosureHeader()
-    {
-        LabelAt(this, "ESTUN", 26, 22, 215, 36, 29, new Color("#f3f5f1"), true);
-        LabelAt(this, "ROBOTICS  /  TEACH PENDANT", 27, 63, 251, 16, 9, new Color("#8b9797"), true);
-        LabelAt(this, "S20-180 PRO", 27, 81, 240, 14, 9, new Color("#b9c1bd"));
+    private void UpdateMinimumHeight() => CustomMinimumSize = new Vector2(320, Mathf.Ceil(_content.GetCombinedMinimumSize().Y + 30));
 
-        _emergencyButton = new Button
-        {
-            Name = "EmergencyStop",
-            Position = new Vector2(328, 13),
-            Size = new Vector2(88, 88),
-            FocusMode = FocusModeEnum.None,
-            MouseDefaultCursorShape = CursorShape.PointingHand,
-            TooltipText = "Emergency stop immediately stops motion and disables servo drives.\nEscape triggers emergency stop. Press RESET to clear the latch, then enable DRIVES.",
-        };
-        foreach (string state in new[] { "normal", "hover", "pressed", "focus", "disabled" })
-            _emergencyButton.AddThemeStyleboxOverride(state, new StyleBoxEmpty());
-        AddChild(_emergencyButton);
-        _emergencyButton.Pressed += () =>
-        {
-            EmergencyStop();
-            Toast?.Invoke("EMERGENCY STOP · Motion stopped. Press RESET, then enable DRIVES.");
-        };
-        _emergencyButton.MouseEntered += () => { _emergencyHovered = true; QueueRedraw(); };
-        _emergencyButton.MouseExited += () => { _emergencyHovered = false; QueueRedraw(); };
-        LabelAt(_emergencyButton, "STOP", 13, 23, 62, 24, 12, new Color("#ffeae5"), true, HorizontalAlignment.Center);
-        LabelAt(this, "EMERGENCY STOP", 323, 91, 98, 12, 7, new Color("#aeb8b3"), true, HorizontalAlignment.Center);
+    private void BuildHeader()
+    {
+        var header = Row(_content, 8);
+        var titles = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        titles.AddThemeConstantOverride("separation", 2);
+        header.AddChild(titles);
+        MakeLabel(titles, "Teach pendant", 18, Ink, true);
+        MakeLabel(titles, "ESTUN S20-180 PRO", 12, Muted);
+        var close = MakeButton(header, "Hide", 48, 34);
+        close.Name = "HidePendant";
+        close.TooltipText = "Hide the pendant and stop motion. Reopen it from the top toolbar.";
+        close.Pressed += () => { _pointerJogAxis = -1; _keyboardJogDirection = 0; _controller!.StopMotion(); CloseRequested?.Invoke(); };
+        var safety = Row(_content, 8);
+        _statusLabel = MakeLabel(safety, "Drives off", 12, Muted, true);
+        _statusLabel.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        _statusLabel.CustomMinimumSize = new Vector2(80, 32);
+        _emergencyButton = MakeButton(safety, "E-STOP", 88, 32);
+        _emergencyButton.Name = "EmergencyStop";
+        _emergencyButton.AddThemeStyleboxOverride("normal", Flat(new Color("#76362f"), 6, new Color("#b66d60"), 1));
+        _emergencyButton.AddThemeStyleboxOverride("hover", Flat(new Color("#97443a"), 6, new Color("#d79676"), 1));
+        _emergencyButton.AddThemeStyleboxOverride("pressed", Flat(new Color("#b64d3c"), 6, new Color("#e9b05f"), 1));
+        _emergencyButton.AddThemeColorOverride("font_color", new Color("#fff0e7"));
+        _emergencyButton.TooltipText = "Emergency stop · Escape\nStops motion and disables drives. Press RESET to clear the latch.";
+        _emergencyButton.Pressed += () => { EmergencyStop(); Toast?.Invoke("Emergency stop · Press RESET, then enable DRIVES."); };
+        var separator = new HSeparator();
+        separator.AddThemeStyleboxOverride("separator", new StyleBoxLine { Color = Border, Thickness = 1 });
+        separator.AddThemeConstantOverride("separation", 1);
+        _content.AddChild(separator);
     }
 
-    private void BuildTouchscreen()
+    private void BuildJogControls()
     {
-        LabelAt(this, "JOG CONTROL", 34, 124, 240, 25, 20, Ink, true);
-        Panel badge = new()
+        var tabs = Row(_content, 4);
+        string[] titles = { "JOINT", "WORLD", "TOOL" };
+        string[] tips =
         {
-            Position = new Vector2(300, 122),
-            Size = new Vector2(106, 27),
-            MouseFilter = MouseFilterEnum.Ignore,
-        };
-        badge.AddThemeStyleboxOverride("panel", Flat(new Color("#dbe3dd"), 4, new Color("#c4cec7"), 1));
-        AddChild(badge);
-        LabelAt(badge, "T1  ·  MANUAL", 0, 0, 106, 27, 10, new Color("#53635c"), true, HorizontalAlignment.Center);
-        LabelAt(this, "VIRTUAL CONTROLLER", 47, 158, 190, 15, 9, Muted, true);
-        LabelAt(this, "6 AXES  /  SIMULATION", 249, 158, 155, 15, 9, Muted, false, HorizontalAlignment.Right);
-
-        string[] tabs = { "JOINT", "WORLD", "TOOL" };
-        string[] tooltips =
-        {
-            "Move individual joints J1–J6. Enable DRIVES, then hold − or +.\nUse Up / Down to select an axis and hold Left / Right to jog. Space stops all motion.",
-            "Move TCP along world coordinate axes: X, Y, Z in millimeters; A, B, C in degrees.\nY is vertical. Rotation readouts use YXZ Euler angles in the base coordinate system.",
-            "Move TCP relative to the current tool orientation.\nTCP readouts remain in the robot base coordinate system. Rotation uses YXZ Euler angles.",
+            "Jog J1–J6 independently. Hold − / + or Left / Right. Up / Down selects an axis.",
+            "Jog TCP along world axes. Y is vertical. X / Y / Z are millimeters; A / B / C use YXZ Euler angles.",
+            "Jog along local tool axes. TCP readouts remain in the robot base frame; rotations use YXZ Euler angles."
         };
         for (int i = 0; i < 3; i++)
         {
-            int tab = i;
-            _tabs[i] = MakeButton(this, tabs[i], 34 + i * 124, 186, 120, 35, false);
-            _tabs[i].TooltipText = tooltips[i];
-            _tabs[i].Pressed += () => SelectFrame((JogFrame)tab);
+            int frame = i;
+            _tabs[i] = MakeButton(tabs, titles[i], 0, 34);
+            _tabs[i].SizeFlagsHorizontal = SizeFlags.ExpandFill;
+            _tabs[i].TooltipText = tips[i];
+            _tabs[i].Pressed += () => SelectFrame((JogFrame)frame);
         }
-
-        _frameDescription = LabelAt(this, "", 35, 232, 370, 17, 10, Muted, true);
+        _frameDescription = MakeLabel(_content, "Axis position · degrees", 12, Muted);
+        var rows = new VBoxContainer { Name = "AxisRows" };
+        rows.AddThemeConstantOverride("separation", 5);
+        _content.AddChild(rows);
         for (int i = 0; i < 6; i++)
         {
             int axis = i;
-            float y = 258 + i * 44;
-            _rowSelectors[i] = MakeButton(this, "", 28, y, 382, 41, false);
-            _rowSelectors[i].AddThemeStyleboxOverride("normal", Flat(new Color("#f1f4f0"), 4));
-            _rowSelectors[i].AddThemeStyleboxOverride("hover", Flat(new Color("#e2e9e3"), 4));
-            _rowSelectors[i].AddThemeStyleboxOverride("pressed", Flat(new Color("#d7e3dc"), 4));
-            _rowSelectors[i].TooltipText = "Select this axis. Hold − / + or Left / Right to jog. Release the jog control to stop.";
-            _rowSelectors[i].Pressed += () => SelectAxis(axis);
-
-            _axisNames[i] = LabelAt(this, JointNames[i], 40, y + 5, 41, 29, 17, Ink, true);
-            _axisCaptions[i] = LabelAt(this, JointCaptions[i], 83, y + 9, 82, 23, 9, Muted, true);
-            _axisValues[i] = LabelAt(this, "0.00", 147, y + 5, 96, 29, 17, Ink, false, HorizontalAlignment.Right);
-            _axisUnits[i] = LabelAt(this, "°", 246, y + 7, 29, 25, 12, Muted);
-            Button minus = MakeButton(this, "−", 283, y + 3, 54, 35, false);
-            Button plus = MakeButton(this, "+", 343, y + 3, 54, 35, false);
-            minus.AddThemeFontSizeOverride("font_size", 23);
+            var row = Row(rows, 5);
+            row.Name = $"AxisRow{i + 1}";
+            var selector = MakeButton(row, "", 0, 42);
+            selector.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+            selector.Name = $"SelectAxis{i + 1}";
+            _rowSelectors[i] = selector;
+            selector.Pressed += () => SelectAxis(axis);
+            var inset = new MarginContainer { MouseFilter = MouseFilterEnum.Ignore };
+            selector.AddChild(inset);
+            inset.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+            SetMargins(inset, 8);
+            inset.AddThemeConstantOverride("margin_top", 0);
+            inset.AddThemeConstantOverride("margin_bottom", 0);
+            var readout = Row(inset, 3);
+            readout.MouseFilter = MouseFilterEnum.Ignore;
+            _axisNames[i] = MakeLabel(readout, JointNames[i], 14, Ink, true);
+            _axisNames[i].CustomMinimumSize = new Vector2(25, 0);
+            _axisValues[i] = MakeLabel(readout, "0.00", 16, Ink);
+            _axisValues[i].SizeFlagsHorizontal = SizeFlags.ExpandFill;
+            _axisValues[i].HorizontalAlignment = HorizontalAlignment.Right;
+            _axisValues[i].CustomMinimumSize = new Vector2(68, 0);
+            _axisUnits[i] = MakeLabel(readout, "°", 12, Muted);
+            _axisUnits[i].CustomMinimumSize = new Vector2(23, 0);
+            _axisUnits[i].HorizontalAlignment = HorizontalAlignment.Right;
+            Button minus = MakeButton(row, "−", 48, 42), plus = MakeButton(row, "+", 48, 42);
+            minus.AddThemeFontSizeOverride("font_size", 22);
             plus.AddThemeFontSizeOverride("font_size", 22);
-            StyleJogButton(minus);
-            StyleJogButton(plus);
-            BindJog(minus, axis, -1);
-            BindJog(plus, axis, 1);
+            BindJog(minus, axis, -1); BindJog(plus, axis, 1);
         }
+    }
 
-        LabelAt(this, "SPEED OVERRIDE", 35, 539, 230, 17, 10, Muted, true);
-        _speedValue = LabelAt(this, "25", 325, 546, 48, 38, 29, Ink, true, HorizontalAlignment.Right);
-        LabelAt(this, "%", 379, 557, 20, 22, 12, Muted, true);
+    private void BuildSpeedControl()
+    {
+        var group = new VBoxContainer();
+        group.AddThemeConstantOverride("separation", 2);
+        _content.AddChild(group);
+        var title = Row(group, 8);
+        MakeLabel(title, "Speed override", 12, Muted).SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        _speedValue = MakeLabel(title, "25%", 14, Ink, true);
         _speedSlider = new HSlider
         {
-            Name = "SpeedOverride",
-            Position = new Vector2(36, 562),
-            Size = new Vector2(266, 27),
-            MinValue = 1,
-            MaxValue = 100,
-            Step = 1,
-            Value = _controller!.SpeedOverride * 100,
-            FocusMode = FocusModeEnum.None,
-            MouseDefaultCursorShape = CursorShape.PointingHand,
-            TooltipText = "Adjust manual jog and program playback speed from 1 to 100 percent.",
+            Name = "SpeedOverride", MinValue = 1, MaxValue = 100, Step = 1,
+            Value = _controller!.SpeedOverride * 100, CustomMinimumSize = new Vector2(0, 28),
+            FocusMode = FocusModeEnum.None, MouseDefaultCursorShape = CursorShape.PointingHand,
+            TooltipText = "Manual jogging and program playback speed: 1–100%."
         };
-        StyleBoxFlat track = Flat(new Color("#c6d0c9"), 3);
-        track.ContentMarginTop = 3;
-        track.ContentMarginBottom = 3;
-        StyleBoxFlat fill = Flat(new Color("#3f7467"), 3);
-        fill.ContentMarginTop = 3;
-        fill.ContentMarginBottom = 3;
+        StyleBoxFlat track = Flat(new Color("#39454f"), 2);
+        track.ContentMarginTop = track.ContentMarginBottom = 2;
+        StyleBoxFlat fill = Flat(Orange, 2);
+        fill.ContentMarginTop = fill.ContentMarginBottom = 2;
         _speedSlider.AddThemeStyleboxOverride("slider", track);
         _speedSlider.AddThemeStyleboxOverride("grabber_area", fill);
         _speedSlider.AddThemeStyleboxOverride("grabber_area_highlight", fill);
         _speedSlider.AddThemeIconOverride("grabber", MakeSliderKnob(false));
         _speedSlider.AddThemeIconOverride("grabber_highlight", MakeSliderKnob(true));
-        _speedSlider.AddThemeIconOverride("grabber_disabled", MakeSliderKnob(false));
-        AddChild(_speedSlider);
+        group.AddChild(_speedSlider);
         _speedSlider.ValueChanged += value => _controller!.SpeedOverride = (float)value / 100;
-        LabelAt(this, "1", 35, 588, 20, 10, 7, Muted);
-        LabelAt(this, "100", 282, 588, 24, 10, 7, Muted, false, HorizontalAlignment.Right);
-
-        _statusLabel = LabelAt(this, "DRIVES OFF", 47, 609, 221, 17, 10, Muted, true);
-        _waypointLabel = LabelAt(this, "00 POINTS", 285, 609, 118, 17, 10, Muted, true, HorizontalAlignment.Right);
     }
 
     private void BuildHardwareKeys()
     {
-        _drivesButton = MakeButton(this, "", 22, 650, 168, 54, true);
-        _drivesButton.TooltipText = "Turn simulated servo drives on or off. With DRIVES on, hold a jog control or click HOME / RUN.\nAfter an emergency stop, press RESET first.";
+        var power = Row(_content, 8);
+        _drivesButton = HardwareButton(power, "DRIVES OFF", out _drivesCaption);
+        _drivesButton.Name = "Drives";
+        _drivesButton.TooltipText = "Enable or disable drives. Enable DRIVES, then hold a jog control or click HOME / RUN.";
         _drivesButton.Pressed += () =>
         {
             _controller!.SetDrives(!_controller.DrivesEnabled);
-            Toast?.Invoke(_controller.EmergencyStopped
-                ? "Emergency stop is latched. Press RESET before enabling drives."
-                : _controller.DrivesEnabled ? "Drives enabled · Hold − / + to jog, or click HOME / RUN." : "Drives off · Robot motion stopped.");
+            RefreshState();
+            Toast?.Invoke(_controller.EmergencyStopped ? "Emergency stop is latched. Press RESET first." : _controller.DrivesEnabled ? "Drives enabled · Hold − / + to jog, or click HOME / RUN." : "Drives off · Motion stopped.");
         };
-        AddIcon(_drivesButton, "power", 13, 14, 26, 26, new Color("#a5b4b0"));
-        _drivesCaption = LabelAt(_drivesButton, "DRIVES OFF", 47, 9, 114, 22, 11, new Color("#d8dfda"), true);
-        LabelAt(_drivesButton, "SERVO POWER", 48, 31, 113, 14, 7, new Color("#748580"), true);
-
-        _stopButton = MakeButton(this, "", 201, 650, 217, 54, true);
-        _stopButton.Name = "StopMotion";
-        _stopButton.TooltipText = "Stop jogging, HOME, program playback or welding simulation immediately.\nSpace is the stop shortcut. DRIVES remain on; start a new motion when ready.";
-        _stopButton.AddThemeStyleboxOverride("normal", Flat(new Color("#453a2e"), 7, new Color("#8a7050"), 1));
-        _stopButton.AddThemeStyleboxOverride("hover", Flat(new Color("#5b4731"), 7, new Color("#b39566"), 1));
-        _stopButton.AddThemeStyleboxOverride("pressed", Flat(new Color("#6b4d2e"), 7, Orange, 1));
-        AddIcon(_stopButton, "stop", 13, 15, 26, 24, Orange);
-        LabelAt(_stopButton, "STOP MOTION", 49, 9, 163, 22, 11, new Color("#f1dfc6"), true);
-        LabelAt(_stopButton, "SPACE  /  STOP", 49, 31, 157, 14, 7, new Color("#bdaa8d"), true);
-        _stopButton.ButtonDown += StopMotion;
-
-        string[] titles = { "HOME", "RECORD", "RUN", "RESET" };
-        string[] icons = { "home", "record", "play", "reset" };
+        var stop = HardwareButton(power, "STOP MOTION", out _);
+        stop.Name = "StopMotion";
+        stop.AddThemeStyleboxOverride("normal", Flat(new Color("#46382c"), 6, new Color("#796044"), 1));
+        stop.AddThemeStyleboxOverride("hover", Flat(new Color("#5b4430"), 6, Orange, 1));
+        stop.TooltipText = "Stop every robot motion · Space\nDrives remain enabled.";
+        stop.ButtonDown += StopMotion;
+        var programHeader = Row(_content, 8);
+        MakeLabel(programHeader, "Motion program", 12, Muted).SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        _waypointLabel = MakeLabel(programHeader, "0 points", 12, Muted);
+        var program = Row(_content, 5);
+        string[] titles = { "HOME", "REC", "RUN", "RESET" };
         string[] hints =
         {
-            "Move smoothly to the home pose. Enable DRIVES, then click HOME.\nClick STOP MOTION or press Space to stop.",
-            "Record the current robot pose as a program point. Points are saved automatically.\nRight-click to save the current program again.",
-            "Play recorded points in order. Enable DRIVES, then click RUN.\nPress again, click STOP MOTION or press Space to stop playback.",
-            "Clear the emergency stop latch. Servo drives remain disabled.\nRight-click to clear all recorded program points.",
+            "Move to the home pose. Enable DRIVES, then click HOME. Space stops motion.",
+            "Record and save the current pose. Right-click to save the program again.",
+            "Run recorded points. Click again or press Space to stop.",
+            "Clear the emergency stop latch. Drives remain off. Right-click to clear the program."
         };
-        for (int i = 0; i < 4; i++)
+        for (int i = 0; i < titles.Length; i++)
         {
-            Button button = MakeButton(this, "", 22 + i * 102, 728, 90, 55, true);
+            Button button = HardwareButton(program, titles[i], out Label caption, 36);
+            button.Name = titles[i] == "REC" ? "Record" : titles[i];
             button.TooltipText = hints[i];
-            button.AddThemeStyleboxOverride("normal", Flat(new Color("#323a3a"), 6, new Color("#505b58"), 1));
-            button.AddThemeStyleboxOverride("hover", Flat(new Color("#414c46"), 6, new Color("#788579"), 1));
-            button.AddThemeStyleboxOverride("pressed", Flat(new Color("#212926"), 6, Orange, 1));
-            AddIcon(button, icons[i], 36, 7, 20, 21, i == 1 ? Orange : new Color("#becbc1"));
-            Label caption = LabelAt(button, titles[i], 0, 32, 90, 17, 9, new Color("#d1d9cf"), true, HorizontalAlignment.Center);
             if (i == 0) button.Pressed += () =>
             {
                 if (!RequireMotionPermission()) return;
-                _controller!.GoHome();
-                HomeViewRequested?.Invoke();
-                Toast?.Invoke("Returning to HOME · Press SPACE or STOP MOTION to stop.");
+                _controller!.GoHome(); HomeViewRequested?.Invoke(); Toast?.Invoke("Returning home · Press Space to stop.");
             };
             if (i == 1)
             {
                 button.Pressed += () =>
                 {
-                    if (!_controller!.RecordWaypoint())
-                    {
-                        Toast?.Invoke(_controller.Status);
-                        return;
-                    }
+                    if (!_controller!.RecordWaypoint()) { Toast?.Invoke(_controller.Status); return; }
                     bool saved = _controller.SaveWaypoints();
                     Toast?.Invoke(saved ? $"Point P{_controller.Waypoints.Count:000} recorded and saved." : _controller.Status);
+                    RefreshReadouts();
                 };
                 button.GuiInput += input =>
                 {
                     if (input is InputEventMouseButton { ButtonIndex: MouseButton.Right, Pressed: true })
-                    {
-                        bool saved = _controller!.SaveWaypoints();
-                        Toast?.Invoke(saved ? "Robot program saved to the application data folder." : _controller.Status);
-                    }
+                        Toast?.Invoke(_controller!.SaveWaypoints() ? "Robot program saved." : _controller.Status);
                 };
             }
             if (i == 2)
             {
-                _runButton = button;
                 _runCaption = caption;
                 button.Pressed += () =>
                 {
-                    if (_controller!.IsPlaying || _controller.MotionActive)
-                    {
-                        _controller.StopMotion();
-                        Toast?.Invoke("Motion stopped.");
-                        return;
-                    }
+                    if (_controller!.IsPlaying || _controller.MotionActive) { StopMotion(); return; }
                     if (!RequireMotionPermission()) return;
-                    if (_controller.Waypoints.Count < 2)
-                    {
-                        Toast?.Invoke("Record at least two points to build a motion program.");
-                        return;
-                    }
-                    _controller.PlayWaypoints();
-                    Toast?.Invoke("Program running · Press SPACE or STOP MOTION to stop.");
+                    if (_controller.Waypoints.Count < 2) { Toast?.Invoke("Record at least two points to run a program."); return; }
+                    _controller.PlayWaypoints(); Toast?.Invoke("Program running · Press Space to stop.");
                 };
             }
             if (i == 3)
             {
                 button.Pressed += () =>
                 {
-                    _pointerJogAxis = -1;
-                    _keyboardJogDirection = 0;
-                    _controller!.StopMotion();
-                    _controller.ResetEmergencyStop();
-                    Toast?.Invoke("Controller reset · Enable DRIVES to continue.");
+                    _pointerJogAxis = -1; _keyboardJogDirection = 0; _controller!.StopMotion();
+                    _controller.ResetEmergencyStop(); RefreshState(); Toast?.Invoke("Controller reset · Enable DRIVES to continue.");
                 };
                 button.GuiInput += input =>
                 {
                     if (input is InputEventMouseButton { ButtonIndex: MouseButton.Right, Pressed: true })
                     {
-                        _controller!.ClearWaypoints();
-                        _controller.SaveWaypoints();
-                        Toast?.Invoke("Motion program cleared.");
+                        _controller!.ClearWaypoints(); _controller.SaveWaypoints();
+                        Toast?.Invoke("Motion program cleared."); RefreshReadouts();
                     }
                 };
             }
         }
-        _motionHint = LabelAt(this, "SPACE STOP  ·  ESC EMERGENCY STOP", 25, 795, 390, 12, 8, new Color("#738079"), true, HorizontalAlignment.Center);
+        _motionHint = MakeLabel(_content, "Space  Stop     Esc  Emergency stop", 12, Muted);
     }
 
     public override void _Input(InputEvent input)
@@ -352,6 +290,7 @@ public partial class PendantPanel : Control
             Toast?.Invoke("EMERGENCY STOP · Press RESET, then enable DRIVES.");
             GetViewport().SetInputAsHandled();
         }
+        else if (GetViewport().GuiGetFocusOwner() is LineEdit or TextEdit or Godot.Range) return;
         else if (code is Key.Up or Key.Down && key.Pressed)
         {
             SelectAxis((_selectedAxis + (code == Key.Up ? 5 : 1)) % 6);
@@ -377,7 +316,7 @@ public partial class PendantPanel : Control
     public override void _Process(double delta)
     {
         if (_controller is null) return;
-        _pulseTime += delta;
+
 
         // Window focus changes and releases outside any button must never leave a jog latched.
         if (_pointerJogAxis >= 0 && !Input.IsMouseButtonPressed(MouseButton.Left)) StopPointerJog();
@@ -391,6 +330,7 @@ public partial class PendantPanel : Control
             RefreshState();
             QueueRedraw();
         }
+        if (!IsVisibleInTree()) return;
         _readoutTimer += (float)delta;
         if (_readoutTimer < 1f / 20f) return;
         _readoutTimer = 0;
@@ -406,7 +346,8 @@ public partial class PendantPanel : Control
 
     public override void _Notification(int what)
     {
-        if (what != NotificationApplicationFocusOut || _controller is null) return;
+        if (_controller is null || !GodotObject.IsInstanceValid(_controller)) return;
+        if (what != NotificationApplicationFocusOut && !(what == NotificationVisibilityChanged && !IsVisibleInTree())) return;
         _pointerJogAxis = -1;
         _keyboardJogDirection = 0;
         _controller.StopMotion();
@@ -421,21 +362,21 @@ public partial class PendantPanel : Control
         for (int i = 0; i < 3; i++)
         {
             bool active = i == (int)frame;
-            _tabs[i].AddThemeStyleboxOverride("normal", Flat(active ? new Color("#344d46") : new Color("#dee5df"), 5, active ? new Color("#344d46") : new Color("#cbd5cc"), 1));
-            _tabs[i].AddThemeStyleboxOverride("hover", Flat(active ? new Color("#3b5b4e") : new Color("#d0dcd2"), 5));
+            _tabs[i].AddThemeStyleboxOverride("normal", Flat(active ? new Color("#494031") : Surface, 5, active ? new Color("#494031") : Border, 1));
+            _tabs[i].AddThemeStyleboxOverride("hover", Flat(active ? new Color("#594c37") : new Color("#35434c"), 5));
             _tabs[i].AddThemeColorOverride("font_color", active ? new Color("#f2f5ee") : Muted);
             _tabs[i].AddThemeColorOverride("font_hover_color", active ? new Color("#ffffff") : Ink);
         }
         _frameDescription.Text = frame switch
         {
-            JogFrame.Joint => "AXIS POSITION  /  DEGREES",
-            JogFrame.World => "TCP IN BASE  /  mm · °  /  WORLD JOG",
-            _ => "TCP IN BASE  /  mm · °  /  TOOL-RELATIVE JOG",
+            JogFrame.Joint => "Axis position · degrees",
+            JogFrame.World => "TCP in base frame · world jog",
+            _ => "TCP in base frame · tool-relative jog",
         };
         for (int i = 0; i < 6; i++)
         {
             _axisNames[i].Text = frame == JogFrame.Joint ? JointNames[i] : TcpNames[i];
-            _axisCaptions[i].Text = frame == JogFrame.Joint ? JointCaptions[i] : TcpCaptions[i];
+            _rowSelectors[i].TooltipText = (frame == JogFrame.Joint ? JointCaptions[i] : TcpCaptions[i]) + " · Select this axis; hold − / + to jog.";
             _axisUnits[i].Text = frame == JogFrame.Joint || i >= 3 ? "°" : "mm";
         }
         SelectAxis(_selectedAxis);
@@ -453,8 +394,8 @@ public partial class PendantPanel : Control
         for (int i = 0; i < 6; i++)
         {
             bool active = i == axis;
-            _rowSelectors[i].AddThemeStyleboxOverride("normal", Flat(active ? new Color("#dbe7dd") : new Color("#f1f4f0"), 4, active ? new Color("#b5ccbb") : new Color("#e1e7e0"), 1));
-            _axisNames[i].AddThemeColorOverride("font_color", active ? new Color("#32634f") : Ink);
+            _rowSelectors[i].AddThemeStyleboxOverride("normal", Flat(active ? new Color("#323d44") : new Color("#202930"), 4, active ? new Color("#657982") : new Color("#303d46"), 1));
+            _axisNames[i].AddThemeColorOverride("font_color", active ? Orange : Ink);
         }
     }
 
@@ -471,6 +412,7 @@ public partial class PendantPanel : Control
 
     private void BeginJog(int axis, int direction, bool pointer)
     {
+        if (!IsVisibleInTree()) return;
         SelectAxis(axis);
         if (!RequireMotionPermission()) return;
         if (pointer) _pointerJogAxis = axis;
@@ -528,8 +470,8 @@ public partial class PendantPanel : Control
         _drivesCaption.Text = _lastDrives ? "DRIVES ON" : "DRIVES OFF";
         _drivesCaption.AddThemeColorOverride("font_color", _lastDrives ? Green : new Color("#d8dfda"));
         _drivesButton.AddThemeStyleboxOverride("normal", Flat(_lastDrives ? new Color("#2f4840") : new Color("#30393a"), 7, _lastDrives ? new Color("#6ea58a") : new Color("#566461"), 1));
-        _motionHint.Text = _lastEstop ? "EMERGENCY STOP ACTIVE  ·  PRESS RESET" : "SPACE STOP  ·  ESC EMERGENCY STOP";
-        _motionHint.AddThemeColorOverride("font_color", _lastEstop ? new Color("#f09b87") : new Color("#738079"));
+        _motionHint.Text = _lastEstop ? "Emergency stop active · Press RESET" : "Space  Stop     Esc  Emergency stop";
+        _motionHint.AddThemeColorOverride("font_color", _lastEstop ? new Color("#f09b87") : Muted);
         RefreshReadouts();
     }
 
@@ -550,11 +492,11 @@ public partial class PendantPanel : Control
             float[] values = { p.X, p.Y, p.Z, e.X, e.Y, e.Z };
             for (int i = 0; i < 6; i++) _axisValues[i].Text = Format(values[i], i < 3 ? 1 : 2);
         }
-        _speedValue.Text = Math.Round(_controller.SpeedOverride * 100).ToString(CultureInfo.InvariantCulture);
-        string status = _controller.EmergencyStopped ? "EMERGENCY STOP" : !_controller.DrivesEnabled ? "DRIVES OFF · STANDBY" : !_controller.LastIkSucceeded ? "TCP TARGET UNREACHABLE" : _controller.Status.Contains("limit", StringComparison.OrdinalIgnoreCase) ? "JOINT LIMIT REACHED" : _controller.IsPlaying ? "PROGRAM RUNNING" : _controller.MotionActive ? "MOTION ACTIVE" : "READY TO MOVE";
+        _speedValue.Text = Math.Round(_controller.SpeedOverride * 100).ToString(CultureInfo.InvariantCulture) + "%";
+        string status = _controller.EmergencyStopped ? "Emergency stopped" : !_controller.DrivesEnabled ? "Drives off" : !_controller.LastIkSucceeded ? "TCP unreachable" : _controller.Status.Contains("limit", StringComparison.OrdinalIgnoreCase) ? "Joint limit reached" : _controller.IsPlaying ? "Program running" : _controller.MotionActive ? "Motion active" : "Ready to move";
         _statusLabel.Text = status;
-        _statusLabel.AddThemeColorOverride("font_color", _controller.EmergencyStopped ? new Color("#a53d32") : !_controller.LastIkSucceeded ? new Color("#a26828") : _controller.DrivesEnabled ? new Color("#3b6d56") : Muted);
-        _waypointLabel.Text = $"{_controller.Waypoints.Count:00} POINTS";
+        _statusLabel.AddThemeColorOverride("font_color", _controller.EmergencyStopped ? new Color("#eea38e") : !_controller.LastIkSucceeded ? Orange : _controller.DrivesEnabled ? Green : Muted);
+        _waypointLabel.Text = $"{_controller.Waypoints.Count} points";
         _runCaption.Text = _controller.IsPlaying || _controller.MotionActive ? "STOP" : "RUN";
     }
 
@@ -564,206 +506,75 @@ public partial class PendantPanel : Control
         return value.ToString(decimals == 2 ? "0.00" : "0.0", CultureInfo.InvariantCulture);
     }
 
-    public override void _Draw()
+    private static HBoxContainer Row(Node parent, int spacing)
     {
-        float h = Math.Max(818, Size.Y);
-        StyleBoxFlat shadow = Flat(new Color("#151b1c"), 23, new Color("#070d0e"), 1);
-        shadow.ShadowColor = new Color(0, 0, 0, .40f);
-        shadow.ShadowSize = 19;
-        shadow.ShadowOffset = new Vector2(0, 10);
-        DrawStyleBox(shadow, new Rect2(0, 0, 440, h));
-        DrawStyleBox(Flat(new Color("#202727"), 20, new Color("#62615a"), 1), new Rect2(5, 5, 430, h - 10));
-        DrawStyleBox(Flat(new Color("#222b2b"), 16, new Color("#363f3c"), 1), new Rect2(11, 11, 418, h - 22));
-        DrawLine(new Vector2(29, 8), new Vector2(302, 8), new Color("#c07c40"), 2, true);
-        DrawLine(new Vector2(438, 128), new Vector2(438, h - 88), new Color("#956b42"), 2, true);
-        DrawLine(new Vector2(2, 128), new Vector2(2, h - 88), new Color("#956b42"), 2, true);
-
-        // Machined housing grooves and recessed fasteners are part of the enclosure.
-        for (int i = 0; i < 9; i++)
-        {
-            float y = 155 + i * 47;
-            DrawLine(new Vector2(6, y), new Vector2(10, y + 18), new Color("#0f1717"), 2, true);
-            DrawLine(new Vector2(430, y), new Vector2(434, y + 18), new Color("#0f1717"), 2, true);
-        }
-        DrawScrew(new Vector2(17, 17));
-        DrawScrew(new Vector2(423, 17));
-        DrawScrew(new Vector2(17, h - 17));
-        DrawScrew(new Vector2(423, h - 17));
-
-        DrawStyleBox(Flat(new Color("#111918"), 12, new Color("#59645e"), 1), new Rect2(17, 110, 406, 531));
-        DrawStyleBox(Flat(Screen, 8, new Color("#bbc7be"), 1), new Rect2(22, 115, 396, 521));
-        DrawLine(new Vector2(34, 178), new Vector2(405, 178), ScreenLine, 1, true);
-        DrawLine(new Vector2(34, 530), new Vector2(405, 530), ScreenLine, 1, true);
-        DrawLine(new Vector2(34, 603), new Vector2(405, 603), ScreenLine, 1, true);
-        DrawCircle(new Vector2(38, 165), 3, new Color("#50876a"), true, -1, true);
-        Color statusColor = _controller?.EmergencyStopped == true ? new Color("#b45540") : _controller?.DrivesEnabled == true ? new Color("#51866a") : new Color("#a4aaa3");
-        DrawCircle(new Vector2(38, 617), 3, statusColor, true, -1, true);
-
-        DrawLine(new Vector2(25, 717), new Vector2(415, 717), new Color("#3b4640"), 1, true);
-        DrawLine(new Vector2(25, 719), new Vector2(415, 719), new Color("#111d18"), 1, true);
-        DrawEmergencyButton();
+        var row = new HBoxContainer { MouseFilter = MouseFilterEnum.Pass };
+        row.AddThemeConstantOverride("separation", spacing); parent.AddChild(row); return row;
     }
 
-    private void DrawEmergencyButton()
+    private Label MakeLabel(Node parent, string text, int size, Color color, bool bold = false)
     {
-        Vector2 center = new(372, 54);
-        bool stopped = _controller?.EmergencyStopped == true;
-        if (stopped)
-        {
-            float alpha = .12f + (float)(Math.Sin(_pulseTime * 4) + 1) * .08f;
-            DrawCircle(center, 39, new Color(1, .25f, .13f, alpha), true, -1, true);
-        }
-        DrawCircle(center + new Vector2(0, 3), 34, new Color("#0c1212"), true, -1, true);
-        DrawCircle(center, 33, new Color(_emergencyHovered ? "#ecc870" : "#c8ab5e"), true, -1, true);
-        DrawArc(center, 31, -.8f, 3.8f, 48, new Color("#ead08b"), 1, true);
-        DrawCircle(center, 27, new Color("#342822"), true, -1, true);
-        DrawCircle(center + new Vector2(0, stopped ? 2 : 1), 24, new Color("#741d18"), true, -1, true);
-        DrawCircle(center + new Vector2(0, stopped ? 2 : -2), 22, new Color(_emergencyHovered ? "#e65c47" : "#cf4b38"), true, -1, true);
-        DrawArc(center + new Vector2(0, -2), 19, 3.55f, 5.85f, 28, new Color("#f2856b"), 2, true);
-        DrawArc(center + new Vector2(0, 0), 22, .15f, 2.65f, 24, new Color("#9c3025"), 2, true);
+        var label = new Label { Text = text, VerticalAlignment = VerticalAlignment.Center, MouseFilter = MouseFilterEnum.Ignore };
+        label.AddThemeFontOverride("font", bold ? _semibold : _font);
+        label.AddThemeFontSizeOverride("font_size", size);
+        label.AddThemeColorOverride("font_color", color);
+        parent.AddChild(label); return label;
     }
 
-    private void DrawScrew(Vector2 at)
+    private Button MakeButton(Node parent, string text, float width, float height)
     {
-        DrawCircle(at + new Vector2(0, 1), 5.5f, new Color("#101916"), true, -1, true);
-        DrawCircle(at, 4.2f, new Color("#535c54"), true, -1, true);
-        DrawArc(at, 4, 3.3f, 6, 16, new Color("#879084"), 1, true);
-        DrawLine(at + new Vector2(-1.7f, -1.7f), at + new Vector2(1.7f, 1.7f), new Color("#19231d"), 1.5f, true);
-    }
-
-    private Button MakeButton(Control parent, string text, float x, float y, float width, float height, bool dark)
-    {
-        Button button = new()
-        {
-            Text = text,
-            Position = new Vector2(x, y),
-            Size = new Vector2(width, height),
-            FocusMode = FocusModeEnum.None,
-            MouseDefaultCursorShape = CursorShape.PointingHand,
-        };
-        button.AddThemeFontOverride("font", _semibold!);
+        var button = new Button { Text = text, CustomMinimumSize = new Vector2(width, height), FocusMode = FocusModeEnum.None, MouseDefaultCursorShape = CursorShape.PointingHand };
+        button.AddThemeFontOverride("font", _semibold);
         button.AddThemeFontSizeOverride("font_size", 12);
-        button.AddThemeColorOverride("font_color", dark ? new Color("#d8dfd8") : Ink);
-        button.AddThemeColorOverride("font_hover_color", dark ? Colors.White : Ink);
-        button.AddThemeColorOverride("font_pressed_color", dark ? Colors.White : Ink);
-        button.AddThemeStyleboxOverride("normal", Flat(dark ? new Color("#30393a") : new Color("#dbe3dc"), 6, dark ? new Color("#566461") : new Color("#c0cdc1"), 1));
-        button.AddThemeStyleboxOverride("hover", Flat(dark ? new Color("#3d4e46") : new Color("#ceded1"), 6, dark ? new Color("#859486") : new Color("#a7c4ad"), 1));
-        button.AddThemeStyleboxOverride("pressed", Flat(dark ? new Color("#1f2f26") : new Color("#bbd0bf"), 6, new Color("#7eac8c"), 1));
+        button.AddThemeColorOverride("font_color", Ink);
+        button.AddThemeColorOverride("font_hover_color", Colors.White);
+        button.AddThemeColorOverride("font_pressed_color", Colors.White);
+        button.AddThemeStyleboxOverride("normal", Flat(Surface, 6, Border, 1));
+        button.AddThemeStyleboxOverride("hover", Flat(new Color("#35434c"), 6, new Color("#667d89"), 1));
+        button.AddThemeStyleboxOverride("pressed", Flat(new Color("#4b463c"), 6, Orange, 1));
         button.AddThemeStyleboxOverride("focus", new StyleBoxEmpty());
-        parent.AddChild(button);
+        parent.AddChild(button); return button;
+    }
+
+    private Button HardwareButton(Node parent, string text, out Label caption, float height = 40)
+    {
+        var button = MakeButton(parent, "", 0, height);
+        button.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        caption = MakeLabel(button, text, 12, Ink, true);
+        caption.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+        caption.HorizontalAlignment = HorizontalAlignment.Center;
         return button;
     }
 
-    private void StyleJogButton(Button button)
+    private static void SetMargins(MarginContainer container, int margin)
     {
-        button.AddThemeStyleboxOverride("normal", Flat(new Color("#e4eae2"), 5, new Color("#bdcabe"), 1));
-        button.AddThemeStyleboxOverride("hover", Flat(new Color("#d2e0d1"), 5, new Color("#7d9d83"), 1));
-        button.AddThemeStyleboxOverride("pressed", Flat(new Color("#426e55"), 5, new Color("#35593f"), 1));
-        button.AddThemeColorOverride("font_pressed_color", new Color("#ffffff"));
-        button.AddThemeColorOverride("font_color", new Color("#526757"));
-    }
-
-    private Label LabelAt(Control parent, string text, float x, float y, float width, float height, int size, Color color, bool bold = false, HorizontalAlignment alignment = HorizontalAlignment.Left)
-    {
-        Label label = new()
-        {
-            ClipText = true,
-            Text = text,
-            Position = new Vector2(x, y),
-            VerticalAlignment = VerticalAlignment.Center,
-            HorizontalAlignment = alignment,
-            MouseFilter = MouseFilterEnum.Ignore,
-        };
-        label.AddThemeFontOverride("font", (bold ? _semibold : _font)!);
-        label.AddThemeFontSizeOverride("font_size", Math.Max(9, size));
-        label.AddThemeColorOverride("font_color", color);
-        // Apply the requested rectangle after the final font metrics, preventing
-        // Godot's initial default-font minimum width from widening small captions.
-        label.Size = new Vector2(width, height);
-        parent.AddChild(label);
-        return label;
+        foreach (string side in new[] { "left", "right", "top", "bottom" }) container.AddThemeConstantOverride("margin_" + side, margin);
     }
 
     private static StyleBoxFlat Flat(Color color, int radius, Color? border = null, int borderWidth = 0)
     {
         return new StyleBoxFlat
         {
-            BgColor = color,
-            BorderColor = border ?? color,
-            BorderWidthLeft = borderWidth,
-            BorderWidthTop = borderWidth,
-            BorderWidthRight = borderWidth,
-            BorderWidthBottom = borderWidth,
-            CornerRadiusTopLeft = radius,
-            CornerRadiusTopRight = radius,
-            CornerRadiusBottomLeft = radius,
-            CornerRadiusBottomRight = radius,
-            CornerDetail = 12,
-            AntiAliasing = true,
+            BgColor = color, BorderColor = border ?? color,
+            BorderWidthLeft = borderWidth, BorderWidthTop = borderWidth, BorderWidthRight = borderWidth, BorderWidthBottom = borderWidth,
+            CornerRadiusTopLeft = radius, CornerRadiusTopRight = radius, CornerRadiusBottomLeft = radius, CornerRadiusBottomRight = radius,
+            CornerDetail = 8, AntiAliasing = true,
         };
     }
 
     private static Texture2D MakeSliderKnob(bool hover)
     {
-        const int size = 22;
+        const int size = 18;
         Image image = Image.CreateEmpty(size, size, false, Image.Format.Rgba8);
-        Vector2 center = new(10.5f, 10.5f);
+        Vector2 center = new(8.5f, 8.5f);
         for (int y = 0; y < size; y++)
         for (int x = 0; x < size; x++)
         {
             float r = new Vector2(x, y).DistanceTo(center);
-            if (r > 10.5f) continue;
-            Color color = r > 8.5f ? new Color("#668a74") : new Color(hover ? "#f4f8f0" : "#e8f0e4");
-            color.A = Mathf.Clamp(10.5f - r, 0, 1);
-            image.SetPixel(x, y, color);
+            if (r > 8.5f) continue;
+            Color color = hover ? new Color("#ffcea0") : Orange;
+            color.A = Mathf.Clamp(8.5f - r, 0, 1); image.SetPixel(x, y, color);
         }
         return ImageTexture.CreateFromImage(image);
-    }
-
-    private static void AddIcon(Control parent, string kind, float x, float y, float width, float height, Color color)
-    {
-        Control icon = new()
-        {
-            Position = new Vector2(x, y),
-            Size = new Vector2(width, height),
-            MouseFilter = MouseFilterEnum.Ignore,
-        };
-        parent.AddChild(icon);
-        icon.Draw += () =>
-        {
-            Vector2 center = icon.Size * .5f;
-            float s = Math.Min(icon.Size.X, icon.Size.Y);
-            void Line(float ax, float ay, float bx, float by, float weight = 1.7f) => icon.DrawLine(new Vector2(ax, ay) * s, new Vector2(bx, by) * s, color, weight, true);
-            switch (kind)
-            {
-                case "power":
-                    icon.DrawArc(center, s * .31f, -.95f, 4.10f, 30, color, 1.8f, true);
-                    Line(.5f, .10f, .5f, .49f, 2);
-                    break;
-                case "stop":
-                    icon.DrawRect(new Rect2(new Vector2(.24f, .24f) * s, new Vector2(.52f, .52f) * s), color);
-                    break;
-                case "home":
-                    Line(.10f, .47f, .50f, .12f);
-                    Line(.50f, .12f, .90f, .47f);
-                    Line(.24f, .40f, .24f, .87f);
-                    Line(.24f, .87f, .76f, .87f);
-                    Line(.76f, .87f, .76f, .40f);
-                    Line(.50f, .85f, .50f, .60f);
-                    break;
-                case "record":
-                    icon.DrawCircle(center, s * .29f, color, true, -1, true);
-                    icon.DrawArc(center, s * .43f, 0, Mathf.Tau, 32, new Color(color, .3f), 1, true);
-                    break;
-                case "play":
-                    icon.DrawColoredPolygon(new[] { new Vector2(.30f, .14f) * s, new Vector2(.86f, .50f) * s, new Vector2(.30f, .86f) * s }, color);
-                    break;
-                case "reset":
-                    icon.DrawArc(center, s * .33f, -.7f, 4.1f, 28, color, 1.8f, true);
-                    Line(.15f, .18f, .16f, .46f);
-                    Line(.16f, .46f, .44f, .36f);
-                    break;
-            }
-        };
     }
 }
