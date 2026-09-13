@@ -1,0 +1,16 @@
+* text=auto
+*.cs text eol=lf
+*.gdshader text eol=lf
+*.tscn text eol=lf
+*.godot text eol=lf
+*.py text eol=lf
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.meshbin binary
+*.hdr binary
+*.png binary
+*.ico binary
+*.ttf binary
+*.step -whitespace
+tools/cad-licenses/* -whitespace
+Assets/Fonts/OFL.txt -whitespace

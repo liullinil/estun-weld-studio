@@ -1,0 +1,56 @@
+ESTUN Studio STEP import runtime
+===============================
+
+The ESTUN Studio application and planner are written in C#. An isolated Python
+worker calls OpenCascade to parse STEP BRep geometry and produce a neutral JSON
+mesh/seam description. The worker does not connect to a network at runtime.
+
+The Windows portable distribution includes the following unmodified packages:
+
+Python 3.11.9, Windows embeddable x64
+  Copyright Python Software Foundation and contributors.
+  License: Python Software Foundation License Version 2 and included notices.
+  Source: https://www.python.org/downloads/release/python-3119/
+  License copy: cad-licenses/Python-3.11.9.txt
+
+cadquery-ocp 7.7.2.2b2, Windows CPython 3.11 wheel
+  Copyright CadQuery/OCP contributors.
+  Binding license: Apache License 2.0.
+  Source: https://github.com/CadQuery/OCP
+  Package: https://pypi.org/project/cadquery-ocp/7.7.2.2b2/
+  License copy: cad-licenses/OCP-Apache-2.0.txt
+
+Open CASCADE Technology 7.7.2, native DLLs bundled by cadquery-ocp
+  Copyright Open CASCADE SAS and contributors.
+  License: GNU Lesser General Public License 2.1, with OCCT additional exception.
+  Source: https://github.com/Open-Cascade-SAS/OCCT/tree/V7_7_2
+  License copies: cad-licenses/OCCT-LGPL-2.1.txt and OCCT-exception.txt
+  The native DLLs reside in Lib/site-packages/cadquery_ocp.libs and are loaded
+  dynamically. Users may replace them with compatible modified builds. No
+  OpenCascade source or native library has been modified for this application.
+
+VTK 9.2.6, Windows CPython 3.11 wheel
+  Copyright Kitware, Inc., Ken Martin, Will Schroeder, Bill Lorensen and others.
+  License: BSD 3-clause (complete package license included).
+  Source: https://gitlab.kitware.com/vtk/vtk/-/tree/v9.2.6
+  License copy: cad-licenses/VTK-9.2.6.txt
+  VTK is included because OpenCascade's TKIVtk DLL links to VTK 9.2 DLLs.
+  The STEP worker uses neither the VTK renderer nor any VTK Python API.
+
+The OpenCascade wheel also bundles unmodified optional native dependencies for
+its image/visualization modules: FreeImage, FreeType, OpenEXR/Imath, libjpeg-turbo,
+Little CMS, Lerc, XZ/liblzma, libpng, libwebp, OpenJPEG, LibRaw, libtiff, zlib,
+zstd, libdeflate, and Microsoft C++ runtime libraries. The complete upstream
+package is retained rather than selectively rebuilding its binary dependency
+graph. The upstream project/source links and license notices are listed in
+cad-licenses/native-dependencies.txt.
+
+SetupCad.ps1 downloads only the pinned official Python archive and the two
+PyPI wheels; SHA256 hashes are checked before extraction. To prepare the runtime
+from a source checkout, run:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File tools/SetupCad.ps1
+
+No system Python/pip installation is required. Copy the complete generated
+.tools/cad-python folder to Build/CadRuntime when packaging. The setup script
+also installs this notice, license copies, and the worker into that folder.

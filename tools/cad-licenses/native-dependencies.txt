@@ -1,0 +1,45 @@
+Upstream optional native dependencies distributed in the cadquery-ocp wheel
+==========================================================================
+
+The unmodified wheel carries these DLLs for optional OCCT visualization/image
+features. The STEP import worker calls geometry algorithms only.
+
+FreeImage: FreeImage Public License 1.0 or GNU GPL 2.0
+  https://freeimage.sourceforge.io/license.html
+  https://freeimage.sourceforge.io/download.html
+FreeType: FreeType License or GNU GPL 2.0
+  https://gitlab.freedesktop.org/freetype/freetype/-/blob/master/docs/FTL.TXT
+OpenEXR/Imath: BSD 3-clause
+  https://github.com/AcademySoftwareFoundation/openexr/blob/main/LICENSE.md
+  https://github.com/AcademySoftwareFoundation/Imath/blob/main/LICENSE.md
+libjpeg-turbo: IJG License, BSD 3-clause, zlib license (component dependent)
+  https://github.com/libjpeg-turbo/libjpeg-turbo/blob/main/LICENSE.md
+Little CMS: MIT
+  https://github.com/mm2/Little-CMS/blob/master/LICENSE
+Lerc: Apache 2.0
+  https://github.com/Esri/lerc/blob/master/LICENSE
+XZ/liblzma: public domain for liblzma (other project parts vary)
+  https://github.com/tukaani-project/xz/blob/master/COPYING
+libpng: libpng License
+  https://github.com/pnggroup/libpng/blob/libpng16/LICENSE
+libwebp: BSD 3-clause
+  https://chromium.googlesource.com/webm/libwebp/+/refs/heads/main/COPYING
+OpenJPEG: BSD 2-clause
+  https://github.com/uclouvain/openjpeg/blob/master/LICENSE
+LibRaw: LGPL 2.1 or CDDL 1.0
+  https://github.com/LibRaw/LibRaw/blob/master/LICENSE.LGPL
+  https://github.com/LibRaw/LibRaw/blob/master/LICENSE.CDDL
+libtiff: libtiff license (permissive, BSD style)
+  https://gitlab.com/libtiff/libtiff/-/blob/master/LICENSE.md
+zlib: zlib license
+  https://github.com/madler/zlib/blob/develop/LICENSE
+zstd: BSD 3-clause or GNU GPL 2.0
+  https://github.com/facebook/zstd/blob/dev/LICENSE
+libdeflate: MIT
+  https://github.com/ebiggers/libdeflate/blob/master/COPYING
+Microsoft Visual C++ runtime: Microsoft redistributable runtime terms
+  https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution
+
+Actual license files for the above libraries accompany this index where
+available. Consult each upstream project for its complete copyright/source
+history. No dependency in this list is modified by ESTUN Studio.

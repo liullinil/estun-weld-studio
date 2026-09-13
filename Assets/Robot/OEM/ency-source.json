@@ -1,0 +1,17 @@
+{
+  "source": "ENCY MachineMaker public mechanism library",
+  "mechanism_guid": "{EB55546E-532E-43EE-84F0-31C344506178}",
+  "model": "Estun S20-180 Pro",
+  "viewer_url": "https://download.encycam.com/MachineMaker/online/index.html?app=Ency&mechanismGuid=%7BEB55546E-532E-43EE-84F0-31C344506178%7D",
+  "download_url": "https://webservices.encycam.com/SprutServerApi/DownloadMechanismFile?mechanismguid=%7BEB55546E-532E-43EE-84F0-31C344506178%7D",
+  "preview_url": "https://webservices.encycam.com/SprutServerApi/GetMechanismPreview?mechanismguid=%7BEB55546E-532E-43EE-84F0-31C344506178%7D",
+  "original_archive": "ency-source.mmm",
+  "original_archive_bytes": 9614057,
+  "original_contents": "ency/",
+  "geometry": "Seven native segmented OpenGL stream v2 OSD meshes. All surface primitives parsed with original per-vertex normals. Non-surface snap/line entities omitted from rendering.",
+  "render_material": "Original RGB multiplied by the corresponding XML VisualModel SkinColor (0.6, 0.6, 0.6, 1.0).",
+  "source_metadata": "ency/mechanism_params.json",
+  "source_transform_metadata": "ency/mechanismDescription.xml",
+  "source_metadata_note": "Public mechanism metadata identifies brand Estun and model S20-180 Pro. The internal XML Brand field says Aubo, apparently inherited from the library template; all OSD filenames and XML Caption identify S20-180 Pro.",
+  "rights": "Source asset remains third-party content from the user-supplied ENCY mechanism. No ownership or unrestricted redistribution rights are asserted."
+}

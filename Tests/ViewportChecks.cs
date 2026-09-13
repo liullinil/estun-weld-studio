@@ -1,0 +1,89 @@
+using Godot;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+namespace EstunStudio;
+
+/// <summary>Exercise the actual cube pointer targets and environment controls in Godot.</summary>
+public partial class ViewportChecks : Node
+{
+    private int _checks;
+
+    public override async void _Ready()
+    {
+        EffectsPanel? effects=null;
+        const string configPath="user://render-settings.cfg";
+        bool configExisted=Godot.FileAccess.FileExists(configPath);
+        string originalConfig=configExisted?Godot.FileAccess.GetFileAsString(configPath):"";
+        int result=0;
+        try
+        {
+            var layer=new CanvasLayer();AddChild(layer);
+            var cube=new ViewCube();layer.AddChild(cube);cube.Build();
+            var requested=new HashSet<string>();
+            Vector3 selected=Vector3.Zero;
+            cube.ViewRequested+=direction=>{selected=direction;requested.Add(Key(direction));};
+            foreach(var direction in new[]{Vector3.Right,Vector3.Left,Vector3.Up,Vector3.Down,Vector3.Back,Vector3.Forward})
+            {
+                cube.SetCameraBasis(Basis.LookingAt(-direction,Mathf.Abs(direction.Y)>.9f?Vector3.Back:Vector3.Up));
+                await ToSignal(GetTree(),SceneTree.SignalName.ProcessFrame);
+                await ToSignal(GetTree(),SceneTree.SignalName.ProcessFrame);
+                foreach(float x in new[]{-.77f,0,.77f}) foreach(float y in new[]{-.77f,0,.77f})
+                {
+                    var point=new Vector2(73+x*37.5f,79-y*37.5f);
+                    cube._GuiInput(new InputEventMouseButton {Position=point,ButtonIndex=MouseButton.Left,Pressed=true});
+                    cube._GuiInput(new InputEventMouseButton {Position=point,ButtonIndex=MouseButton.Left,Pressed=false});
+                    Require(selected.IsFinite() && Mathf.Abs(selected.Length()-1)<.0001f,"Cube direction is a normalized valid vector");
+                    if(x==0 && y==0) Require(selected.IsEqualApprox(direction),"Face centre requests its named orthographic direction");
+                }
+            }
+            Require(requested.Count==26,$"All 26 unique CAD view orientations can be clicked (actual {requested.Count})");
+            int homes=0;cube.HomeRequested+=()=>homes++;
+            cube._GuiInput(new InputEventMouseButton {Position=new Vector2(128,16),ButtonIndex=MouseButton.Left,Pressed=true});
+            cube._GuiInput(new InputEventMouseButton {Position=new Vector2(128,16),ButtonIndex=MouseButton.Left,Pressed=false});
+            Require(homes==1,"Home icon resets the camera");
+            Vector2 orbit=Vector2.Zero;cube.OrbitRequested+=delta=>orbit+=delta;
+            cube._GuiInput(new InputEventMouseButton {Position=new Vector2(73,79),ButtonIndex=MouseButton.Left,Pressed=true});
+            cube._GuiInput(new InputEventMouseMotion {Position=new Vector2(85,86),Relative=new Vector2(12,7)});
+            cube._GuiInput(new InputEventMouseButton {Position=new Vector2(85,86),ButtonIndex=MouseButton.Left,Pressed=false});
+            Require(orbit==new Vector2(12,7),"Dragging the cube emits orbit motion");
+
+            var world=new StudioWorld();AddChild(world);world.Build();
+            var camera=new Camera3D {Position=new Vector3(3,2,3)};AddChild(camera);
+            effects=new EffectsPanel();layer.AddChild(effects);effects.Build(world,camera);effects.ResetToCrisp();
+            Require(GetViewport().Msaa3D==Viewport.Msaa.Msaa4X && !GetViewport().UseTaa,"Crisp defaults use 4× MSAA without temporal blur");
+            var attributes=(CameraAttributesPractical)camera.Attributes;
+            Require(!attributes.DofBlurNearEnabled && !attributes.DofBlurFarEnabled && attributes.DofBlurAmount==0,"Robot is fully in focus by default");
+            Require(!world.Environment.FogEnabled,"Inspection defaults have no haze");
+            var s=effects.Settings;s.Ssao=false;s.Ssil=false;s.Ssr=false;s.Bloom=false;s.Shadows=false;s.Fog=true;s.Exposure=1.31f;s.BloomStrength=.55f;s.Msaa=3;s.Taa=true;s.DepthOfField=true;
+            s.Sparks=false;s.Smoke=false;s.BeadDetail=0;
+            int notifications=0;effects.SettingsChanged+=_=>notifications++;effects.ApplySettings(false);
+            Require(!world.Environment.SsaoEnabled && !world.Environment.SsilEnabled && !world.Environment.SsrEnabled,"All screen-space effects respond immediately");
+            Require(!world.Environment.GlowEnabled && Mathf.IsEqualApprox(world.Environment.GlowIntensity,.55f) && Mathf.IsEqualApprox(world.Environment.TonemapExposure,1.31f),"Bloom and exposure sliders update environment properties");
+            Require(world.Environment.FogEnabled && GetViewport().UseTaa && GetViewport().Msaa3D==Viewport.Msaa.Msaa8X,"Haze, TAA and 8× MSAA can be enabled explicitly");
+            Require(attributes.DofBlurFarEnabled && attributes.DofBlurFarDistance>4,"Optional DOF keeps the working envelope in focus");
+            Require(Descendants(world).OfType<Light3D>().All(light=>!light.ShadowEnabled),"Shadow control reaches all studio lights");
+            Require(notifications==1,"Welding renderer receives changed settings");
+            s.Save();var loaded=RenderSettings.Load();
+            Require(!loaded.Sparks && !loaded.Smoke && loaded.BeadDetail==0 && loaded.Taa && loaded.Msaa==3 && Mathf.IsEqualApprox(loaded.Exposure,1.31f),"Render and welding settings persist across reloads");
+            effects.ResetToCrisp();
+            Require(world.Environment.SsaoEnabled && world.Environment.SsilEnabled && world.Environment.SsrEnabled && !GetViewport().UseTaa,"Reset restores the full crisp preset");
+            GD.Print($"PASS: {_checks} view cube and render controls checks");
+        }
+        catch(Exception ex){result=1;GD.PrintErr($"FAIL: {ex}");}
+        finally
+        {
+            effects?.Free();
+            if(configExisted){using var file=Godot.FileAccess.Open(configPath,Godot.FileAccess.ModeFlags.Write);file.StoreString(originalConfig);}
+            else if(Godot.FileAccess.FileExists(configPath)) DirAccess.RemoveAbsolute(ProjectSettings.GlobalizePath(configPath));
+        }
+        GetTree().Quit(result);
+    }
+
+    private static string Key(Vector3 v)=>$"{Mathf.Sign(Mathf.Snapped(v.X,.01f))},{Mathf.Sign(Mathf.Snapped(v.Y,.01f))},{Mathf.Sign(Mathf.Snapped(v.Z,.01f))}";
+    private static IEnumerable<Node> Descendants(Node node)
+    {foreach(Node child in node.GetChildren()){yield return child;foreach(var grandchild in Descendants(child))yield return grandchild;}}
+    private void Require(bool condition,string message)
+    {if(!condition)throw new InvalidOperationException(message);_checks++;}
+}

@@ -1,0 +1,39 @@
+; ESTUN Studio — S20-180 Pro desktop simulation
+config_version=5
+
+[application]
+config/name="ESTUN Studio"
+run/main_scene="res://Scenes/Main.tscn"
+config/features=PackedStringArray("4.5", "C#", "Forward Plus")
+config/icon="res://Assets/icon.svg"
+boot_splash/show_image=false
+boot_splash/bg_color=Color(0.065, 0.075, 0.09, 1)
+
+[display]
+window/size/viewport_width=1600
+window/size/viewport_height=1000
+window/size/window_width_override=1440
+window/size/window_height_override=900
+window/size/min_width=1120
+window/size/min_height=700
+window/stretch/mode="canvas_items"
+
+[dotnet]
+project/assembly_name="EstunStudio"
+
+[rendering]
+renderer/rendering_method="forward_plus"
+renderer/rendering_method.mobile="forward_plus"
+rendering_device/driver.windows="vulkan"
+textures/default_filters/use_nearest_mipmap_filter=false
+anti_aliasing/quality/msaa_3d=2
+anti_aliasing/quality/use_taa=false
+lights_and_shadows/directional_shadow/size=4096
+lights_and_shadows/positional_shadow/atlas_size=4096
+environment/ssao/quality=3
+environment/ssil/quality=3
+environment/ssr/max_steps=96
+textures/default_filters/anisotropic_filtering_level=4
+
+[physics]
+common/physics_ticks_per_second=60
