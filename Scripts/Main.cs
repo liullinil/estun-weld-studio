@@ -53,7 +53,7 @@ public partial class Main : Node3D
             if(args[i]=="--plan")_autoPlan=true;
             if(args[i]=="--simulate"){_autoPlan=true;_autoSimulate=true;}
         }
-        ShowToast("Ready to explore · Enable DRIVES, hold SPACE, then jog an axis.",8);
+        ShowToast("Ready · Enable DRIVES, then jog or start a program. SPACE stops motion.",8);
     }
 
     private void BuildInterface()
@@ -106,7 +106,7 @@ public partial class Main : Node3D
         var footer=PanelAt(_ui,0,952,1600,48,new Color("171d23"));footer.MouseFilter=Control.MouseFilterEnum.Stop;
         footer.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.BottomWide);footer.OffsetTop=-48;
         LabelAt(footer,"LMB / RMB  ORBIT     WHEEL  ZOOM     MMB  PAN",32,15,570,18,10,_muted);
-        LabelAt(footer,"SPACE  ENABLE     ESC  E-STOP     TAB  CINEMA",530,15,520,18,10,_muted);
+        LabelAt(footer,"SPACE  STOP     ESC  E-STOP     TAB  CINEMA",530,15,520,18,10,_muted);
         _fps=LabelAt(footer,"FORWARD+  /  ULTRA",-265,15,230,18,10,_muted);_fps.AnchorLeft=_fps.AnchorRight=1;_fps.HorizontalAlignment=HorizontalAlignment.Right;
         _toast=LabelAt(_ui,"",350,828,720,41,12,new Color("d6e3df"));
         _toast.HorizontalAlignment=HorizontalAlignment.Center;
@@ -123,11 +123,11 @@ public partial class Main : Node3D
         LabelAt(_help,"WORKSPACE GUIDE",30,24,590,31,23,_ink);
         ButtonAt(_help,"×",670,20,41,36,ToggleHelp,false);
         LabelAt(_help,"MOVE THE ROBOT",30,85,650,23,12,_amber);
-        LabelAt(_help,"1   Click DRIVES on the pendant.\n2   Hold SPACE to operate the enabling device.\n3   Hold an axis − / + key, or select a row and use ← / →.\n4   Release SPACE to stop. ESC latches the emergency stop.",30,120,675,117,15,new Color("bdcbd2"));
+        LabelAt(_help,"1   Click DRIVES on the pendant.\n2   Hold an axis − / + key, or select a row and use ← / →.\n3   Click HOME, RUN or SIMULATE to start automatic motion.\n4   SPACE or STOP MOTION stops. ESC latches emergency stop.",30,120,675,117,15,new Color("bdcbd2"));
         LabelAt(_help,"JOINT / WORLD / TOOL",30,253,650,23,12,_amber);
         LabelAt(_help,"JOINT rotates a single motor. WORLD moves the TCP in the base frame.\nTOOL moves along the tool's own axes. A/B/C rotate about X/Y/Z.\nTCP coordinates use a right-handed Y-up frame; distances are millimeters.",30,287,680,85,14,new Color("bdcbd2"));
         LabelAt(_help,"TEACH & REPLAY",30,384,650,23,12,_amber);
-        LabelAt(_help,"REC stores a pose. Hold SPACE and click RUN to replay taught points.\nOpen PROGRAM to save/load your sequence. Use RESET after an E-stop.\nThis is an offline visual simulator; model geometry is reference-derived.",30,419,680,95,14,new Color("bdcbd2"));
+        LabelAt(_help,"REC stores a pose. Click RUN to replay taught points with DRIVES on.\nSPACE stops movement; use RESET after an E-stop.\nThis is an offline visual simulator with source-derived robot geometry.",30,419,680,95,14,new Color("bdcbd2"));
     }
     private void BuildProgramPanel()
     {
@@ -170,7 +170,7 @@ public partial class Main : Node3D
         if(_autoPlan && !_startedAutoPlan && _welding.Part!=null && !_welding.IsBusy)
         {_startedAutoPlan=true;_welding.Generate();}
         if(_autoSimulate && _startedAutoPlan && !_startedAutoSimulate && !_welding.IsBusy && _welding.Program?.ReadyCount>0)
-        {_startedAutoSimulate=true;_controller.SetDrives(true);_controller.HoldToRun=true;_welding.Run();}
+        {_startedAutoSimulate=true;_controller.SetDrives(true);_welding.Run();}
         if(_startedAutoSimulate)_autoSimTime+=delta;
         bool simulationCaptureReady=!_autoSimulate || (_autoSimTime>1 && _welding.Effects.IsArcActive && _welding.Effects.BeadCount>24) || (_startedAutoSimulate&&!_welding.IsSimulating) || (_startedAutoPlan&&_welding.Program?.ReadyCount==0);
         if(_capturePath!=null && !_captureDone && ++_captureFrame>180 && !_welding.IsBusy && simulationCaptureReady)
@@ -227,7 +227,7 @@ public partial class Main : Node3D
     }
     public override void _Notification(int what)
     {
-        if(what==NotificationApplicationFocusOut){_orbit=_pan=false;if(_controller!=null){_controller.HoldToRun=false;_controller.StopMotion();}}
+        if(what==NotificationApplicationFocusOut){_orbit=_pan=false;_controller?.StopMotion();}
     }
     private void UpdateCamera()
     {
@@ -247,10 +247,10 @@ public partial class Main : Node3D
     {
         _cinema=!_cinema;_ui.Visible=!_cinema;
         _welding.Stop();
-        _controller.HoldToRun=false;_controller.StopMotion();
+        _controller.StopMotion();
         UpdateCamera();
     }
-    private void ToggleHelp(){_help.Visible=!_help.Visible;_controller.HoldToRun=false;}
+    private void ToggleHelp(){_help.Visible=!_help.Visible;_controller.StopMotion();}
     private void ToggleFullscreen()=>DisplayServer.WindowSetMode(DisplayServer.WindowGetMode()==DisplayServer.WindowMode.Fullscreen?DisplayServer.WindowMode.Windowed:DisplayServer.WindowMode.Fullscreen);
     private void ShowToast(string message,double duration=4.5){_toast.Text=message;_toastUntil=_time+duration;}
     private Panel PanelAt(Control parent,float x,float y,float w,float h,Color color)

@@ -186,7 +186,7 @@ public partial class WeldingWorkspace : Node
             if(_exiting||revision!=_revision){Program=null;return;}
             foreach(var seam in Program.Seams)Part.SetResult(seam.Id,seam.State==WeldSeamState.Ready);
             Part.RefreshSeams();RefreshList();_status.Text=Program.Summary;
-            _progress.Text="GREEN: checked path   ·   RED: unavailable   ·   SPACE + SIMULATE";Toast?.Invoke(Program.Summary);
+            _progress.Text="GREEN: checked path   ·   RED: unavailable   ·   CLICK SIMULATE";Toast?.Invoke(Program.Summary);
         }
         catch(OperationCanceledException){Program=null;if(!_exiting)_status.Text="Planning cancelled";}
         catch(Exception ex){Program=null;if(!_exiting){_status.Text="Planning failed · "+ex.Message;Toast?.Invoke(ex.Message);}}
@@ -197,7 +197,7 @@ public partial class WeldingWorkspace : Node
         if(IsBusy){Toast?.Invoke("Wait for planning to finish");return;}
         if(IsSimulating){Stop();return;}
         if(Program==null||Program.Motions.Count==0){Toast?.Invoke("Generate a program with reachable seams first");return;}
-        if(!_controller.CanMove){Toast?.Invoke("Enable DRIVES and hold SPACE, then click SIMULATE");return;}
+        if(!_controller.CanMove){Toast?.Invoke("Enable DRIVES, then click SIMULATE");return;}
         if(_controller.AnglesDegrees.Zip(Program.StartAngles,(a,b)=>Math.Abs(a-b)).Max()>.3f){Toast?.Invoke("Robot start pose changed · generate the program again");return;}
         Effects.Clear();_motionIndex=0;_elapsed=0;_motionStart=_controller.AnglesDegrees;
         if(!_controller.ApplyPlannedPose(_motionStart,"Welding program ready"))return;

@@ -1,4 +1,4 @@
-﻿# ESTUN Weld Studio
+# ESTUN Weld Studio
 
 A Windows robotic welding workspace built with **C# and Godot 4.5.1 .NET**. Import STEP assemblies, review angle-based seam candidates, position CAD with an interactive gizmo, generate checked robot trajectories, and simulate a mounted welding torch, arc, sparks, smoke and cooling weld beads.
 
@@ -21,7 +21,7 @@ In the development workspace, run `Start.cmd` or `Launch.ps1`. The first launch 
 3. Choose a seam angle range, such as **85–95 degrees**. Recognition uses adjacent BRep face normals, with sampling along curved edges. Contact edges between separate solids are also considered. **Concave / contact only** filters common fillet candidates.
 4. Review candidates. Select an entry or click a seam in 3D. Its **×** button or **Delete** excludes it; **RESTORE** restores exclusions. The angle rule identifies geometric candidates, so operator review determines welding intent.
 5. **GENERATE PROGRAM** searches paths. Amber means unplanned; green means a checked path was found; red means this planner found no valid path. Hover a list entry for the reason.
-6. Enable **DRIVES**, hold **Space**, then click **SIMULATE**. Keep Space held. Release, Escape/STOP, loss of focus, workpiece edits or other robot motion stop playback. Arc is off during travel and on only during welding.
+6. Enable **DRIVES**, then click **SIMULATE**. No key needs to be held. **Space / STOP MOTION**, Escape, loss of focus, workpiece edits or other robot motion stop playback. Arc is off during travel and on only during welding.
 7. **EXPORT** writes JSON or CSV with joint angles, TCP poses, timings, arc state, seam IDs, tool and validation metadata.
 
 Workpiece transformations, recognition changes and seam removal invalidate the old program. A changed robot start pose requires replanning. Playback cannot start during planning/import. After interruption, generate again from the current pose.
@@ -44,11 +44,13 @@ The rotating view cube offers **26 face, edge and corner views**, mouse orbit an
 
 **EFFECTS** provides SSAO, SSIL, reflections, shadows, haze, bloom and intensity, exposure, MSAA, TAA, depth of field, sparks, smoke and weld-bead detail. Settings persist locally. **DOF and TAA are off by default; MSAA is 4×.** RESET TO CRISP restores a sharp inspection image. Background blur is opt-in.
 
+Stable HDR and a 1024-pixel room reflection probe provide material highlights. The probe captures only the fixed room, excluding the moving robot, workpiece, overlays and nearby mounting platform. **Screen-space reflections and screen-space bounce are off by default** to avoid silhouette gaps, pixelated reflections and frozen reflection ghosts; both remain optional effects. Existing settings are migrated once while retaining exposure, bloom and other preferences. Painted housings and concrete are dielectric materials, and the platform has a satin finish.
+
 The stage uses HDR reflections, metal PBR, ACES tone mapping and studio lights. Welding adds flickering arc illumination, spatter, rising smoke and a visible deposited bead that cools from incandescent metal. Thermal distortion and physical metallurgy are not simulated.
 
 ## Teach pendant
 
-Enable DRIVES, hold Space and an on-screen −/+ key. Up/Down selects an axis; Left/Right jogs while enabled. JOINT moves one motor, WORLD jogs the TCP in base coordinates, TOOL uses the tool frame. HOME, RECORD and RUN provide teaching functions. RESET clears E-stop and leaves drives off.
+Enable DRIVES and hold an on-screen −/+ key or Left/Right to jog; release the jog control to stop. Up/Down selects an axis. **HOME, RUN and SIMULATE start with one click**, without holding Space. **Space is a stop shortcut**, and the former enabling-device button is now **STOP MOTION**. JOINT moves one motor, WORLD jogs the TCP in base coordinates and TOOL uses the tool frame. RESET clears E-stop and leaves drives off. Focus loss stops motion; returning to the window never resumes it automatically.
 
 TCP is now the torch wire tip with an explicit transform from the native flange. Coordinates are right-handed Y-up, position in millimeters, orientation using Godot YXZ Euler decomposition. A/B/C jog rotates about X/Y/Z; it is not KUKA's native ABC convention.
 
@@ -83,13 +85,13 @@ Verified with actual STEP input and the shipping Main scene:
 
 | Suite | Checks |
 | --- | ---: |
-| Robot kinematics and interlocks | 69 |
-| Actual robot, torch and pendant scene | 53 |
-| View cube and effect controls | 74 |
+| Robot kinematics and interlocks | 71 |
+| Actual robot, torch and pendant scene | 69 |
+| View cube and effect controls | 86 |
 | CAD transform gizmo | 45 |
 | C# STEP import service | 11 |
 | Collision geometry and all generated sample segments | 336 |
-| End-to-end CAD/planning/playback/edit lifecycle | 25 |
+| End-to-end CAD/planning/playback/edit lifecycle | 28 |
 | Native OpenCascade tests | 7 |
 
 The native tests include inch/mm conversion, rotated/translated assemblies, circular and non-right-angle edges, face normals, contact seams and invalid input. Workflow tests cover cancellation, busy-state races, stale-program invalidation, moved start pose, E-stop and actual gizmo drag.

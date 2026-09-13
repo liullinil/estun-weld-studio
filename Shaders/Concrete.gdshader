@@ -13,8 +13,8 @@ void fragment(){
  float detail=1.0-smoothstep(0.001,0.012,max(length(dFdx(p)),length(dFdy(p))));
  float fleck=mix(0.5,noise(p*220.0),detail);
  ALBEDO=tint*(0.80+broad*0.35)*(1.0-line*0.32);
- ROUGHNESS=clamp(0.34+broad*0.20+fleck*0.06,0.0,1.0);
- METALLIC=0.12;
+ ROUGHNESS=clamp(0.61+broad*0.13+fleck*0.03,0.0,1.0);
+ METALLIC=0.0;
  NORMAL_MAP=vec3(0.5+(noise(p*60.0)-0.5)*0.04*detail,0.5+(noise(p.yx*60.0)-0.5)*0.04*detail,1.0);
  NORMAL_MAP_DEPTH=0.22;
 }

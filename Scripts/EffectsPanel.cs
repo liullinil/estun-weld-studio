@@ -44,8 +44,8 @@ public partial class EffectsPanel : PanelContainer
         Settings=RenderSettings.Load();
         Section("LIGHT & MATERIAL");
         ToggleRow("Contact shadows / SSAO",()=>Settings.Ssao,v=>Settings.Ssao=v,"Ambient occlusion adds contact depth around close surfaces.");
-        ToggleRow("Indirect lighting / SSIL",()=>Settings.Ssil,v=>Settings.Ssil=v,"Screen-space indirect lighting adds bounced light to the robot and workpiece.");
-        ToggleRow("Screen-space reflections",()=>Settings.Ssr,v=>Settings.Ssr=v,"Reflect visible geometry in polished metal and the studio floor.");
+        ToggleRow("Screen-space bounce (optional)",()=>Settings.Ssil,v=>Settings.Ssil=v,"Optional screen-space indirect light can introduce noise. HDR studio lighting remains active when this is off.");
+        ToggleRow("Screen reflections (optional)",()=>Settings.Ssr,v=>Settings.Ssr=v,"Optional screen-space reflections can show gaps at object silhouettes and screen edges. Stable HDR and studio reflections remain active when this is off.");
         ToggleRow("Soft shadows",()=>Settings.Shadows,v=>Settings.Shadows=v,"Enable shadows from the studio softboxes and ceiling light.");
         ToggleRow("Atmospheric haze",()=>Settings.Fog,v=>Settings.Fog=v,"Very light studio haze. Disabled by default for clear geometry.");
         ToggleRow("Bloom",()=>Settings.Bloom,v=>Settings.Bloom=v,"Glow around bright light sources and the welding arc.");

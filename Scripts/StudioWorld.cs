@@ -21,10 +21,10 @@ public partial class StudioWorld : Node3D
         BuildLighting();
         var concrete = new ShaderMaterial { Shader = GD.Load<Shader>("res://Shaders/Concrete.gdshader") };
         Box(this, new Vector3(50, .15f, 50), new Vector3(0,-.18f,0), concrete, "Polished concrete");
-        var dark = Metal("252a30", .55f, .30f);
-        var steel = Metal("6d7780", .84f, .23f);
-        var black = Metal("10151a", .3f, .36f);
-        var wall = Metal("30353c", .28f, .58f);
+        var dark = Metal("333b42", .0f, .52f);
+        var steel = Metal("87919a", .86f, .34f);
+        var black = Metal("151b20", .0f, .55f);
+        var wall = Metal("41484f", .0f, .69f);
         // Architectural panels, recessed joints and warm service lights.
         for(int i = -18; i <= 18; i++)
         {
@@ -46,7 +46,7 @@ public partial class StudioWorld : Node3D
         Cylinder(plinth,1.00f,.13f,new Vector3(0,-.025f,0),black);
         Cylinder(plinth,.91f,.055f,new Vector3(0,.067f,0),steel);
         Cylinder(plinth,.83f,.016f,new Vector3(0,.103f,0),dark);
-        Ring(plinth,.915f,.011f,.007f,new Vector3(0,.071f,0),Emissive(new Color("f4b64d"),2.0f));
+        Ring(plinth,.915f,.006f,.007f,new Vector3(0,.071f,0),Emissive(new Color("f4b64d"),.6f));
         for(int i=0;i<24;i++)
         {
             float a=i*Mathf.Tau/24;
@@ -61,7 +61,7 @@ public partial class StudioWorld : Node3D
         RobotMount=new Node3D {Name="Robot mounting plane",Position=new Vector3(0,.12f,0)};
         AddChild(RobotMount);
         // Floor outlines establish scale without a distracting wireframe grid.
-        var paint=Metal("747f87",.2f,.54f);
+        var paint=Metal("48535d",.0f,.78f);
         for(int i=-4;i<=4;i++)
         {
             Box(this,new Vector3(.008f,.001f,9),new Vector3(i,-.101f,0),paint);
@@ -83,6 +83,9 @@ public partial class StudioWorld : Node3D
         AddChild(logo);
         var caption = new Label3D {Text="PRECISION IN MOTION",FontSize=36,PixelSize=.006f,Modulate=new Color("616d77"),OutlineSize=0,Position=new Vector3(1.1f,2.1f,-5.45f)};
         AddChild(caption);
+        // Capture only the fixed room. Moving CAD, robot, torch and TCP overlays
+        // stay on layer 1 so the once-captured probe cannot leave frozen ghosts.
+        MarkStaticReflectionLayer(this);
         TcpAxes = new Node3D {Name="TCP coordinate frame"};
         AddChild(TcpAxes);
         Axis(TcpAxes,Vector3.Right,new Color("f57565"));
@@ -110,17 +113,17 @@ public partial class StudioWorld : Node3D
 
     private void BuildLighting()
     {
-        var skyMat=new PanoramaSkyMaterial {Panorama=GD.Load<Texture2D>("res://Assets/Textures/studio_small_09_2k.hdr"),EnergyMultiplier=.55f};
+        var skyMat=new PanoramaSkyMaterial {Panorama=GD.Load<Texture2D>("res://Assets/Textures/studio_small_09_2k.hdr"),EnergyMultiplier=.18f};
         Environment=new Godot.Environment
         {
             BackgroundMode=Godot.Environment.BGMode.Color,BackgroundColor=new Color("242b33"),
             Sky=new Sky {SkyMaterial=skyMat,RadianceSize=Sky.RadianceSizeEnum.Size1024},
-            AmbientLightSource=Godot.Environment.AmbientSource.Sky,AmbientLightEnergy=.50f,
+            AmbientLightSource=Godot.Environment.AmbientSource.Sky,AmbientLightEnergy=.10f,
             ReflectedLightSource=Godot.Environment.ReflectionSource.Sky,
             TonemapMode=Godot.Environment.ToneMapper.Aces,TonemapExposure=.92f,
             SsaoEnabled=true,SsaoRadius=.25f,SsaoIntensity=1.0f,SsaoPower=1.2f,
-            SsilEnabled=true,SsilIntensity=.30f,SsilRadius=2,
-            SsrEnabled=true,SsrMaxSteps=96,SsrFadeIn=.1f,SsrFadeOut=1.4f,SsrDepthTolerance=.3f,
+            SsilEnabled=false,SsilIntensity=.22f,SsilRadius=1.5f,
+            SsrEnabled=false,SsrMaxSteps=128,SsrFadeIn=.15f,SsrFadeOut=2.0f,SsrDepthTolerance=.08f,
             GlowEnabled=true,GlowIntensity=.30f,GlowBloom=.035f,GlowHdrThreshold=1.5f,
             FogEnabled=true,FogLightColor=new Color("7d8c9b"),FogDensity=.003f,FogSkyAffect=0
         };
@@ -131,19 +134,28 @@ public partial class StudioWorld : Node3D
         Spot("Left bounce",new Vector3(-3.2f,2.5f,1.2f),new Vector3(0,1.0f,0),new Color("fff0d3"),.8f,64,10,.8f);
         var sun=new DirectionalLight3D {Name="Ceiling bounce",RotationDegrees=new Vector3(-68,-25,0),LightColor=new Color("b9c6d0"),LightEnergy=.20f,ShadowEnabled=true,DirectionalShadowMaxDistance=18,LightAngularDistance=.5f};
         AddChild(sun);
-        var probe=new ReflectionProbe {Name="Stage reflections",Position=new Vector3(.5f,1.5f,0),Size=new Vector3(14,8,14),Intensity=.8f,BoxProjection=true,Interior=false,UpdateMode=ReflectionProbe.UpdateModeEnum.Once};
+        var probe=new ReflectionProbe {Name="Stage reflections",Position=new Vector3(0,2.5f,0),Size=new Vector3(24,5.2f,11.2f),Intensity=.70f,CullMask=2,BoxProjection=true,Interior=false,AmbientMode=ReflectionProbe.AmbientModeEnum.Disabled,MeshLodThreshold=0,UpdateMode=ReflectionProbe.UpdateModeEnum.Once};
         AddChild(probe);
     }
     public void SetUltra(bool ultra)
     {
-        Environment.SsaoEnabled=ultra; Environment.SsilEnabled=ultra; Environment.SsrEnabled=ultra;
+        Environment.SsaoEnabled=ultra; Environment.SsilEnabled=false; Environment.SsrEnabled=false;
         GetViewport().Msaa3D=ultra?Viewport.Msaa.Msaa4X:Viewport.Msaa.Disabled;
         GetViewport().UseTaa=false;
     }
     private void Spot(string name,Vector3 pos,Vector3 target,Color color,float energy,float angle,float range,float size)
     {
-        var light=new SpotLight3D {Name=name,Position=pos,LightColor=color,LightEnergy=energy,SpotAngle=angle,SpotRange=range,SpotAttenuation=.65f,ShadowEnabled=true,LightSize=size*.09f,ShadowBias=.025f,ShadowNormalBias=.5f};
+        var light=new SpotLight3D {Name=name,Position=pos,LightColor=color,LightEnergy=energy*.85f,SpotAngle=angle,SpotRange=range,SpotAttenuation=.65f,ShadowEnabled=true,LightSize=size*.09f,ShadowBias=.025f,ShadowNormalBias=.5f};
         AddChild(light); light.LookAt(target,Vector3.Up);
+    }
+    private static void MarkStaticReflectionLayer(Node parent)
+    {
+        foreach(Node child in parent.GetChildren())
+        {
+            if(child.Name=="Instrument plinth" || child is ReflectionProbe)continue;
+            if(child is MeshInstance3D or Label3D)((VisualInstance3D)child).Layers=2;
+            MarkStaticReflectionLayer(child);
+        }
     }
     private static void Axis(Node3D parent,Vector3 direction,Color color)
     {

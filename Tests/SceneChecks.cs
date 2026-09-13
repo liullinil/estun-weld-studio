@@ -32,6 +32,7 @@ public partial class SceneChecks : Node
             CheckActualRig(model, controller);
             CheckPendantLayout(pendant, ui);
             CheckPendantBindings(pendant, controller);
+            CheckStopControls(pendant, controller);
             CheckHiddenInput(pendant, controller, ui);
 
             GD.Print($"MODEL METRICS: {model.MeshPartCount} mesh parts; {Descendants(model).Count()} nodes; " +
@@ -73,7 +74,6 @@ public partial class SceneChecks : Node
             "Original CAD mounting base sits on the mounting plane within source tolerance");
         CheckTransform();
         controller.SetDrives(true);
-        controller.HoldToRun = true;
         // A multi-joint non-home pose catches parent/axis mismatch hidden by the default pose.
         for (int i = 0; i < 6; i++)
         {
@@ -84,7 +84,7 @@ public partial class SceneChecks : Node
         CheckTransform();
         Require(model.ToolTip.Transform.IsEqualApprox(WeldTorch.ToolTransform),
             "Calibrated torch TCP offset is unchanged during articulation");
-        controller.HoldToRun = false;
+        controller.StopMotion();
 
         void CheckTransform()
         {
@@ -120,7 +120,6 @@ public partial class SceneChecks : Node
         for (int axis = 0; axis < 6; axis++)
         for (int directionIndex = 0; directionIndex < 2; directionIndex++)
         {
-            KeyInput(pendant, Key.Space, true);
             var button = buttons[axis * 2 + directionIndex];
             float[] before = controller.AnglesDegrees;
             button.EmitSignal(BaseButton.SignalName.ButtonDown);
@@ -130,9 +129,8 @@ public partial class SceneChecks : Node
             int direction = directionIndex == 0 ? -1 : 1;
             Require((after[axis] - before[axis]) * direction > .00001f &&
                 before.Where((_, i) => i != axis).SequenceEqual(after.Where((_, i) => i != axis)),
-                $"Pendant J{axis + 1} {button.Text} controls the intended physical joint and direction");
+                $"Pendant J{axis + 1} {button.Text} controls its physical joint and direction without Space");
             Require(!controller.MotionActive, "Pendant button release cancels the actual jog");
-            KeyInput(pendant, Key.Space, false);
         }
         foreach (string frame in new[] { "WORLD", "TOOL" })
         {
@@ -146,15 +144,75 @@ public partial class SceneChecks : Node
         Descendants(pendant).OfType<Button>().Single(b => b.Text == "JOINT").EmitSignal(BaseButton.SignalName.Pressed);
     }
 
+    private void CheckStopControls(PendantPanel pendant, RobotController controller)
+    {
+        controller.SetDrives(true);
+        var jog = Descendants(pendant).OfType<Button>().First(b => b.Text == "+");
+        jog.EmitSignal(BaseButton.SignalName.ButtonDown);
+        Require(controller.MotionActive, "Pointer jog starts directly with drives on");
+        pendant._Input(new InputEventMouseButton { ButtonIndex = MouseButton.Left, Pressed = false });
+        Require(!controller.MotionActive, "Mouse release outside jog controls stops the active jog");
+        jog.EmitSignal(BaseButton.SignalName.ButtonDown);
+        jog.EmitSignal(Control.SignalName.MouseExited);
+        Require(!controller.MotionActive, "Dragging the pointer out of a jog control stops motion");
+        jog.EmitSignal(BaseButton.SignalName.ButtonDown);
+        pendant._Process(.05);
+        Require(!controller.MotionActive, "Pointer release polling clears a jog if its release event was missed");
+
+        KeyInput(pendant, Key.Right, true);
+        Require(controller.MotionActive, "Arrow jogging starts without Space");
+        KeyInput(pendant, Key.Right, false);
+        Require(!controller.MotionActive, "Releasing the arrow stops keyboard jogging");
+        KeyInput(pendant, Key.Right, true);
+        pendant._Process(.05);
+        Require(!controller.MotionActive, "Arrow release polling clears a jog if its release event was missed");
+
+        Button home = HardwareButton("HOME");
+        home.EmitSignal(BaseButton.SignalName.Pressed);
+        Require(controller.MotionActive, "HOME click starts automatic movement with no Space hold");
+        KeyInput(pendant, Key.Space, false);
+        pendant._Input(new InputEventMouseButton { ButtonIndex = MouseButton.Left, Pressed = false });
+        pendant._Process(.05);
+        Require(controller.MotionActive, "Space release and an unrelated mouse release do not stop HOME");
+        KeyInput(pendant, Key.Space, true);
+        Require(!controller.MotionActive && controller.DrivesEnabled, "Space press stops HOME while keeping drives enabled");
+        KeyInput(pendant, Key.Space, false);
+        controller._PhysicsProcess(.05);
+        Require(!controller.MotionActive, "Releasing the stop shortcut does not restart motion");
+
+        controller.ClearWaypoints(); controller.RecordWaypoint(); controller.RecordWaypoint();
+        HardwareButton("RUN").EmitSignal(BaseButton.SignalName.Pressed);
+        Require(controller.IsPlaying, "RUN click starts the recorded program without Space");
+        var stop = Descendants(pendant).OfType<Button>().Single(b => b.Name == "StopMotion");
+        stop.EmitSignal(BaseButton.SignalName.ButtonDown);
+        Require(!controller.MotionActive && controller.DrivesEnabled, "STOP MOTION button cancels program playback immediately");
+
+        controller.ApplyPlannedPose(controller.AnglesDegrees, "Welding simulation test");
+        KeyInput(pendant, Key.Space, true);
+        Require(!controller.IsPlannedMotion && !controller.MotionActive, "Space stops the external welding-motion session");
+        KeyInput(pendant, Key.Space, false);
+        home.EmitSignal(BaseButton.SignalName.Pressed);
+        pendant._Notification((int)NotificationApplicationFocusOut);
+        pendant._Notification((int)NotificationApplicationFocusIn);
+        pendant._Process(.05); controller._PhysicsProcess(.05);
+        Require(!controller.MotionActive && controller.DrivesEnabled, "Pendant focus loss cancels HOME and focus return cannot resume it");
+
+        Button HardwareButton(string caption) => Descendants(pendant).OfType<Label>()
+            .Single(l => l.Text == caption && l.GetParent() is Button).GetParent<Button>();
+    }
+
     private void CheckHiddenInput(PendantPanel pendant, RobotController controller, Control workspace)
     {
         controller.SetDrives(true);
-        controller.HoldToRun = false;
+        controller.StopMotion();
         workspace.Hide();
-        KeyInput(pendant, Key.Space, true);
         KeyInput(pendant, Key.Right, true);
-        Require(!controller.HoldToRun && !controller.MotionActive,
-            "Cinema mode ignores enabling and jogging through invisible pendant");
+        Require(!controller.MotionActive,
+            "Cinema mode ignores jogging through the invisible pendant");
+        controller.GoHome();
+        KeyInput(pendant, Key.Space, true);
+        Require(!controller.MotionActive && controller.DrivesEnabled,
+            "Space remains a global motion stop while the pendant is hidden");
         KeyInput(pendant, Key.Escape, true);
         Require(controller.EmergencyStopped && !controller.DrivesEnabled,
             "Emergency stop remains global while the pendant is hidden");
@@ -163,7 +221,7 @@ public partial class SceneChecks : Node
         workspace.Show();
         controller.ResetEmergencyStop();
         controller.SetDrives(true);
-        Require(!controller.HoldToRun, "Returning from cinema does not leave the enabling device latched");
+        Require(!controller.MotionActive, "Returning from cinema does not resume cancelled motion");
     }
 
     private static void KeyInput(PendantPanel pendant, Key code, bool pressed) => pendant._Input(new InputEventKey {

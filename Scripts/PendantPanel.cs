@@ -4,7 +4,7 @@ using System.Globalization;
 
 namespace EstunStudio;
 
-/// <summary>A tactile virtual teach pendant. Jogging always requires a held enabling device.</summary>
+/// <summary>A virtual teach pendant with press-and-hold jogging and one-click program playback.</summary>
 public partial class PendantPanel : Control
 {
     public event Action<string>? Toast;
@@ -37,11 +37,10 @@ public partial class PendantPanel : Control
     private Label _statusLabel = null!;
     private Label _waypointLabel = null!;
     private Label _drivesCaption = null!;
-    private Label _enableCaption = null!;
     private Label _runCaption = null!;
-    private Label _enableHint = null!;
+    private Label _motionHint = null!;
     private Button _drivesButton = null!;
-    private Button _enableButton = null!;
+    private Button _stopButton = null!;
     private Button _runButton = null!;
     private Button _emergencyButton = null!;
     private HSlider _speedSlider = null!;
@@ -49,12 +48,9 @@ public partial class PendantPanel : Control
     private int _selectedAxis;
     private int _pointerJogAxis = -1;
     private int _keyboardJogDirection;
-    private bool _keyboardEnable;
-    private bool _pointerEnable;
     private bool _emergencyHovered;
     private bool _lastEstop;
     private bool _lastDrives;
-    private bool _lastHold;
     private float _readoutTimer;
     private double _pulseTime;
 
@@ -139,7 +135,7 @@ public partial class PendantPanel : Control
         string[] tabs = { "JOINT", "WORLD", "TOOL" };
         string[] tooltips =
         {
-            "Move individual joints J1–J6. Hold Space and press − or +.\nUse Up / Down to select an axis and Left / Right to jog.",
+            "Move individual joints J1–J6. Enable DRIVES, then hold − or +.\nUse Up / Down to select an axis and hold Left / Right to jog. Space stops all motion.",
             "Move TCP along world coordinate axes: X, Y, Z in millimeters; A, B, C in degrees.\nY is vertical. Rotation readouts use YXZ Euler angles in the base coordinate system.",
             "Move TCP relative to the current tool orientation.\nTCP readouts remain in the robot base coordinate system. Rotation uses YXZ Euler angles.",
         };
@@ -160,7 +156,7 @@ public partial class PendantPanel : Control
             _rowSelectors[i].AddThemeStyleboxOverride("normal", Flat(new Color("#f1f4f0"), 4));
             _rowSelectors[i].AddThemeStyleboxOverride("hover", Flat(new Color("#e2e9e3"), 4));
             _rowSelectors[i].AddThemeStyleboxOverride("pressed", Flat(new Color("#d7e3dc"), 4));
-            _rowSelectors[i].TooltipText = "Select this axis. Hold Space and press − / +, or use Left / Right arrow keys.";
+            _rowSelectors[i].TooltipText = "Select this axis. Hold − / + or Left / Right to jog. Release the jog control to stop.";
             _rowSelectors[i].Pressed += () => SelectAxis(axis);
 
             _axisNames[i] = LabelAt(this, JointNames[i], 40, y + 5, 41, 29, 17, Ink, true);
@@ -217,42 +213,36 @@ public partial class PendantPanel : Control
     private void BuildHardwareKeys()
     {
         _drivesButton = MakeButton(this, "", 22, 650, 168, 54, true);
-        _drivesButton.TooltipText = "Turn servo drives on or off. Hold Space or HOLD TO ENABLE to permit motion.\nAfter an emergency stop, press RESET first.";
+        _drivesButton.TooltipText = "Turn simulated servo drives on or off. With DRIVES on, hold a jog control or click HOME / RUN.\nAfter an emergency stop, press RESET first.";
         _drivesButton.Pressed += () =>
         {
             _controller!.SetDrives(!_controller.DrivesEnabled);
             Toast?.Invoke(_controller.EmergencyStopped
                 ? "Emergency stop is latched. Press RESET before enabling drives."
-                : _controller.DrivesEnabled ? "Drives enabled · Hold SPACE, then jog an axis." : "Drives off · Robot motion stopped.");
+                : _controller.DrivesEnabled ? "Drives enabled · Hold − / + to jog, or click HOME / RUN." : "Drives off · Robot motion stopped.");
         };
         AddIcon(_drivesButton, "power", 13, 14, 26, 26, new Color("#a5b4b0"));
         _drivesCaption = LabelAt(_drivesButton, "DRIVES OFF", 47, 9, 114, 22, 11, new Color("#d8dfda"), true);
         LabelAt(_drivesButton, "SERVO POWER", 48, 31, 113, 14, 7, new Color("#748580"), true);
 
-        _enableButton = MakeButton(this, "", 201, 650, 217, 54, true);
-        _enableButton.TooltipText = "Motion is permitted only while this enabling device is held.\nHold Space and press an on-screen − / + jog key.\nOr hold this button with the mouse and use Left / Right to jog the selected axis.";
-        _enableButton.AddThemeStyleboxOverride("normal", Flat(new Color("#283f37"), 7, new Color("#4f7969"), 1));
-        _enableButton.AddThemeStyleboxOverride("hover", Flat(new Color("#335346"), 7, new Color("#6c9c88"), 1));
-        _enableButton.AddThemeStyleboxOverride("pressed", Flat(new Color("#486f5a"), 7, Green, 1));
-        AddIcon(_enableButton, "enable", 13, 15, 26, 24, new Color("#a0c6ac"));
-        _enableCaption = LabelAt(_enableButton, "HOLD TO ENABLE", 49, 9, 163, 22, 11, new Color("#d5e6d5"), true);
-        LabelAt(_enableButton, "SPACE  /  DEADMAN", 49, 31, 157, 14, 7, new Color("#91ad95"), true);
-        _enableButton.ButtonDown += () => { _pointerEnable = true; ApplyEnable(); };
-        _enableButton.ButtonUp += () => { _pointerEnable = false; ApplyEnable(); };
-        _enableButton.MouseExited += () =>
-        {
-            if (!_pointerEnable) return;
-            _pointerEnable = false;
-            ApplyEnable();
-        };
+        _stopButton = MakeButton(this, "", 201, 650, 217, 54, true);
+        _stopButton.Name = "StopMotion";
+        _stopButton.TooltipText = "Stop jogging, HOME, program playback or welding simulation immediately.\nSpace is the stop shortcut. DRIVES remain on; start a new motion when ready.";
+        _stopButton.AddThemeStyleboxOverride("normal", Flat(new Color("#453a2e"), 7, new Color("#8a7050"), 1));
+        _stopButton.AddThemeStyleboxOverride("hover", Flat(new Color("#5b4731"), 7, new Color("#b39566"), 1));
+        _stopButton.AddThemeStyleboxOverride("pressed", Flat(new Color("#6b4d2e"), 7, Orange, 1));
+        AddIcon(_stopButton, "stop", 13, 15, 26, 24, Orange);
+        LabelAt(_stopButton, "STOP MOTION", 49, 9, 163, 22, 11, new Color("#f1dfc6"), true);
+        LabelAt(_stopButton, "SPACE  /  STOP", 49, 31, 157, 14, 7, new Color("#bdaa8d"), true);
+        _stopButton.ButtonDown += StopMotion;
 
         string[] titles = { "HOME", "RECORD", "RUN", "RESET" };
         string[] icons = { "home", "record", "play", "reset" };
         string[] hints =
         {
-            "Move smoothly to the home pose. Enable DRIVES and hold Space until the movement is complete.",
+            "Move smoothly to the home pose. Enable DRIVES, then click HOME.\nClick STOP MOTION or press Space to stop.",
             "Record the current robot pose as a program point. Points are saved automatically.\nRight-click to save the current program again.",
-            "Play recorded points in order. Enable DRIVES and keep Space held.\nPress again to stop playback.",
+            "Play recorded points in order. Enable DRIVES, then click RUN.\nPress again, click STOP MOTION or press Space to stop playback.",
             "Clear the emergency stop latch. Servo drives remain disabled.\nRight-click to clear all recorded program points.",
         };
         for (int i = 0; i < 4; i++)
@@ -269,7 +259,7 @@ public partial class PendantPanel : Control
                 if (!RequireMotionPermission()) return;
                 _controller!.GoHome();
                 HomeViewRequested?.Invoke();
-                Toast?.Invoke("Returning to HOME · Keep SPACE held.");
+                Toast?.Invoke("Returning to HOME · Press SPACE or STOP MOTION to stop.");
             };
             if (i == 1)
             {
@@ -311,15 +301,13 @@ public partial class PendantPanel : Control
                         return;
                     }
                     _controller.PlayWaypoints();
-                    Toast?.Invoke("Program running · Keep SPACE held. Release to stop.");
+                    Toast?.Invoke("Program running · Press SPACE or STOP MOTION to stop.");
                 };
             }
             if (i == 3)
             {
                 button.Pressed += () =>
                 {
-                    _keyboardEnable = false;
-                    _pointerEnable = false;
                     _pointerJogAxis = -1;
                     _keyboardJogDirection = 0;
                     _controller!.StopMotion();
@@ -337,7 +325,7 @@ public partial class PendantPanel : Control
                 };
             }
         }
-        _enableHint = LabelAt(this, "HOLD SPACE + JOG  ·  ESC EMERGENCY STOP", 25, 795, 390, 12, 8, new Color("#738079"), true, HorizontalAlignment.Center);
+        _motionHint = LabelAt(this, "SPACE STOP  ·  ESC EMERGENCY STOP", 25, 795, 390, 12, 8, new Color("#738079"), true, HorizontalAlignment.Center);
     }
 
     public override void _Input(InputEvent input)
@@ -346,22 +334,16 @@ public partial class PendantPanel : Control
         if (input is InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: false })
         {
             StopPointerJog();
-            if (_pointerEnable)
-            {
-                _pointerEnable = false;
-                ApplyEnable();
-            }
             return;
         }
         if (input is not InputEventKey key || key.Echo) return;
         Key code = key.PhysicalKeycode != Key.None ? key.PhysicalKeycode : key.Keycode;
         // Input callbacks still run when an ancestor hides this control (cinema mode).
-        // Keep releases and emergency stop live, but never arm invisible jog controls.
-        if (!IsVisibleInTree() && key.Pressed && code != Key.Escape) return;
+        // Stop shortcuts remain global; invisible jog controls never start motion.
+        if (!IsVisibleInTree() && key.Pressed && code is not (Key.Escape or Key.Space)) return;
         if (code == Key.Space)
         {
-            _keyboardEnable = key.Pressed;
-            ApplyEnable();
+            if (key.Pressed) StopMotion();
             GetViewport().SetInputAsHandled();
         }
         else if (code == Key.Escape && key.Pressed)
@@ -398,18 +380,13 @@ public partial class PendantPanel : Control
         _pulseTime += delta;
 
         // Window focus changes and releases outside any button must never leave a jog latched.
-        if ((_pointerJogAxis >= 0 || _pointerEnable) && !Input.IsMouseButtonPressed(MouseButton.Left))
+        if (_pointerJogAxis >= 0 && !Input.IsMouseButtonPressed(MouseButton.Left)) StopPointerJog();
+        if (_keyboardJogDirection != 0 && !Input.IsPhysicalKeyPressed(_keyboardJogDirection < 0 ? Key.Left : Key.Right))
         {
-            StopPointerJog();
-            _pointerEnable = false;
-            ApplyEnable();
+            _keyboardJogDirection = 0;
+            _controller.StopJog();
         }
-        if (_keyboardEnable && !Input.IsPhysicalKeyPressed(Key.Space))
-        {
-            _keyboardEnable = false;
-            ApplyEnable();
-        }
-        if (_lastEstop != _controller.EmergencyStopped || _lastDrives != _controller.DrivesEnabled || _lastHold != _controller.HoldToRun)
+        if (_lastEstop != _controller.EmergencyStopped || _lastDrives != _controller.DrivesEnabled)
         {
             RefreshState();
             QueueRedraw();
@@ -424,18 +401,14 @@ public partial class PendantPanel : Control
     public override void _ExitTree()
     {
         if (_controller is null || !GodotObject.IsInstanceValid(_controller)) return;
-        _controller.HoldToRun = false;
         _controller.StopMotion();
     }
 
     public override void _Notification(int what)
     {
         if (what != NotificationApplicationFocusOut || _controller is null) return;
-        _keyboardEnable = false;
-        _pointerEnable = false;
         _pointerJogAxis = -1;
         _keyboardJogDirection = 0;
-        _controller.HoldToRun = false;
         _controller.StopMotion();
     }
 
@@ -487,7 +460,7 @@ public partial class PendantPanel : Control
 
     private void BindJog(Button button, int axis, int direction)
     {
-        button.TooltipText = $"Axis {axis + 1}: {(direction > 0 ? "positive" : "negative")} direction.\nEnable DRIVES, then hold Space and this button. Release either to stop motion.";
+        button.TooltipText = $"Axis {axis + 1}: {(direction > 0 ? "positive" : "negative")} direction.\nEnable DRIVES, then hold this button. Release or move the pointer outside it to stop jogging.";
         button.ButtonDown += () => BeginJog(axis, direction, true);
         button.ButtonUp += StopPointerJog;
         button.MouseExited += () =>
@@ -521,39 +494,28 @@ public partial class PendantPanel : Control
         }
         if (!_controller.DrivesEnabled)
         {
-            Toast?.Invoke("Enable DRIVES, then hold SPACE while jogging.");
-            return false;
-        }
-        if (!_controller.HoldToRun)
-        {
-            Toast?.Invoke("Hold SPACE + press − / + to move. Release SPACE to stop.");
+            Toast?.Invoke("Enable DRIVES to move. Hold − / + to jog, or click HOME / RUN.");
             return false;
         }
         return true;
     }
 
-    private void ApplyEnable()
+    private void StopMotion()
     {
         if (_controller is null) return;
-        _controller.HoldToRun = IsVisibleInTree() && !_controller.EmergencyStopped && (_keyboardEnable || _pointerEnable);
-        if (!_controller.HoldToRun)
-        {
-            _controller.StopMotion();
-            _pointerJogAxis = -1;
-            _keyboardJogDirection = 0;
-        }
+        _pointerJogAxis = -1;
+        _keyboardJogDirection = 0;
+        _controller.StopMotion();
+        Toast?.Invoke("Motion stopped.");
         RefreshState();
         QueueRedraw();
     }
 
     private void EmergencyStop()
     {
-        _keyboardEnable = false;
-        _pointerEnable = false;
         _pointerJogAxis = -1;
         _keyboardJogDirection = 0;
-        _controller!.HoldToRun = false;
-        _controller.EmergencyStop();
+        _controller!.EmergencyStop();
         RefreshState();
         QueueRedraw();
     }
@@ -563,14 +525,11 @@ public partial class PendantPanel : Control
         if (_controller is null || _drivesCaption is null) return;
         _lastEstop = _controller.EmergencyStopped;
         _lastDrives = _controller.DrivesEnabled;
-        _lastHold = _controller.HoldToRun;
         _drivesCaption.Text = _lastDrives ? "DRIVES ON" : "DRIVES OFF";
         _drivesCaption.AddThemeColorOverride("font_color", _lastDrives ? Green : new Color("#d8dfda"));
         _drivesButton.AddThemeStyleboxOverride("normal", Flat(_lastDrives ? new Color("#2f4840") : new Color("#30393a"), 7, _lastDrives ? new Color("#6ea58a") : new Color("#566461"), 1));
-        _enableCaption.Text = _lastHold ? "ENABLE ACTIVE" : "HOLD TO ENABLE";
-        _enableButton.AddThemeStyleboxOverride("normal", Flat(_lastHold ? new Color("#486f5a") : new Color("#283f37"), 7, _lastHold ? Green : new Color("#4f7969"), 1));
-        _enableHint.Text = _lastEstop ? "EMERGENCY STOP ACTIVE  ·  PRESS RESET" : _lastHold ? "ENABLING DEVICE HELD  ·  RELEASE TO STOP" : "HOLD SPACE + JOG  ·  ESC EMERGENCY STOP";
-        _enableHint.AddThemeColorOverride("font_color", _lastEstop ? new Color("#f09b87") : _lastHold ? new Color("#a0c7a5") : new Color("#738079"));
+        _motionHint.Text = _lastEstop ? "EMERGENCY STOP ACTIVE  ·  PRESS RESET" : "SPACE STOP  ·  ESC EMERGENCY STOP";
+        _motionHint.AddThemeColorOverride("font_color", _lastEstop ? new Color("#f09b87") : new Color("#738079"));
         RefreshReadouts();
     }
 
@@ -592,7 +551,7 @@ public partial class PendantPanel : Control
             for (int i = 0; i < 6; i++) _axisValues[i].Text = Format(values[i], i < 3 ? 1 : 2);
         }
         _speedValue.Text = Math.Round(_controller.SpeedOverride * 100).ToString(CultureInfo.InvariantCulture);
-        string status = _controller.EmergencyStopped ? "EMERGENCY STOP" : !_controller.DrivesEnabled ? "DRIVES OFF · STANDBY" : !_controller.LastIkSucceeded ? "TCP TARGET UNREACHABLE" : _controller.Status.Contains("limit", StringComparison.OrdinalIgnoreCase) ? "JOINT LIMIT REACHED" : _controller.IsPlaying ? "PROGRAM RUNNING" : _controller.MotionActive ? "MOTION ACTIVE" : _controller.HoldToRun ? "READY TO MOVE" : "HOLD SPACE TO JOG";
+        string status = _controller.EmergencyStopped ? "EMERGENCY STOP" : !_controller.DrivesEnabled ? "DRIVES OFF · STANDBY" : !_controller.LastIkSucceeded ? "TCP TARGET UNREACHABLE" : _controller.Status.Contains("limit", StringComparison.OrdinalIgnoreCase) ? "JOINT LIMIT REACHED" : _controller.IsPlaying ? "PROGRAM RUNNING" : _controller.MotionActive ? "MOTION ACTIVE" : "READY TO MOVE";
         _statusLabel.Text = status;
         _statusLabel.AddThemeColorOverride("font_color", _controller.EmergencyStopped ? new Color("#a53d32") : !_controller.LastIkSucceeded ? new Color("#a26828") : _controller.DrivesEnabled ? new Color("#3b6d56") : Muted);
         _waypointLabel.Text = $"{_controller.Waypoints.Count:00} POINTS";
@@ -781,13 +740,8 @@ public partial class PendantPanel : Control
                     icon.DrawArc(center, s * .31f, -.95f, 4.10f, 30, color, 1.8f, true);
                     Line(.5f, .10f, .5f, .49f, 2);
                     break;
-                case "enable":
-                    Line(.25f, .68f, .25f, .30f);
-                    Line(.40f, .63f, .40f, .17f);
-                    Line(.55f, .62f, .55f, .20f);
-                    Line(.70f, .63f, .70f, .32f);
-                    icon.DrawArc(new Vector2(.46f, .64f) * s, s * .25f, -.15f, 3.12f, 18, color, 1.8f, true);
-                    Line(.23f, .68f, .09f, .52f);
+                case "stop":
+                    icon.DrawRect(new Rect2(new Vector2(.24f, .24f) * s, new Vector2(.52f, .52f) * s), color);
                     break;
                 case "home":
                     Line(.10f, .47f, .50f, .12f);

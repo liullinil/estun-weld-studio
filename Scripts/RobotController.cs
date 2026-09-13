@@ -29,7 +29,6 @@ public partial class RobotController : Node
     private readonly float[] _jointVelocity = new float[6];
     private readonly List<RobotWaypoint> _waypoints = new();
     private bool _initialized;
-    private bool _holdToRun;
     private float _speedOverride = .25f;
     private int _jogAxis = -1;
     private int _jogDirection;
@@ -58,29 +57,12 @@ public partial class RobotController : Node
     public string Status => _status;
     public bool IsPlaying => _playIndex >= 0;
     public bool MotionActive => _jogDirection != 0 || _goingHome || IsPlaying || _externalMotion;
-    public bool CanMove => _initialized && DrivesEnabled && !EmergencyStopped && HoldToRun;
+    public bool CanMove => _initialized && DrivesEnabled && !EmergencyStopped;
     public bool LastIkSucceeded { get; private set; } = true;
     public bool IsPlannedMotion => _externalMotion;
     public IReadOnlyList<RobotWaypoint> Waypoints => _waypoints.AsReadOnly();
     public string WaypointFilePath => "user://estun_s20_180_pro_torch_waypoints.json";
     public string ActiveMotion => _externalMotion ? _externalCaption : IsPlaying ? $"Program · point {_playIndex + 1}/{_waypoints.Count}" : _goingHome ? "Moving to home" : _jogDirection != 0 ? (_cartesianJog ? "TCP jog" : $"Joint A{_jogAxis + 1} jog") : "Standstill";
-
-    public bool HoldToRun
-    {
-        get => _holdToRun;
-        set
-        {
-            if (_holdToRun == value) return;
-            _holdToRun = value;
-            if (!value)
-            {
-                ClearMotion();
-                SetStatus(EmergencyStopped ? "Emergency stop latched" : DrivesEnabled ? "Hold enable to move" : "Drives off");
-            }
-            else SetStatus(EmergencyStopped ? "Reset emergency stop first" : DrivesEnabled ? "Enabled · ready to jog" : "Switch drives on");
-            StatusChanged?.Invoke();
-        }
-    }
 
     /// <summary>Normalized velocity override, 0.01–1.00.</summary>
     public float SpeedOverride
@@ -120,7 +102,7 @@ public partial class RobotController : Node
         }
         DrivesEnabled = enabled;
         if (!enabled) ClearMotion();
-        SetStatus(enabled ? HoldToRun ? "Enabled · ready to jog" : "Drives on · hold enable to move" : "Drives off");
+        SetStatus(enabled ? "Drives on · ready to move" : "Drives off");
         StatusChanged?.Invoke();
         return true;
     }
@@ -129,7 +111,6 @@ public partial class RobotController : Node
     {
         EmergencyStopped = true;
         DrivesEnabled = false;
-        _holdToRun = false;
         ClearMotion();
         SetStatus("Emergency stop latched · reset required");
         StatusChanged?.Invoke();
@@ -139,7 +120,6 @@ public partial class RobotController : Node
     {
         EmergencyStopped = false;
         DrivesEnabled = false;
-        _holdToRun = false;
         ClearMotion();
         SetStatus("Emergency stop reset · drives off");
         StatusChanged?.Invoke();
@@ -168,8 +148,8 @@ public partial class RobotController : Node
         _jogAxis = -1;
         _jogDirection = 0;
         Array.Clear(_jointVelocity);
-        if (!_goingHome && !IsPlaying)
-            SetStatus(EmergencyStopped ? "Emergency stop latched" : !DrivesEnabled ? "Drives off" : HoldToRun ? "Enabled · standstill" : "Hold enable to move");
+        if (!_goingHome && !IsPlaying && !_externalMotion)
+            SetStatus(EmergencyStopped ? "Emergency stop latched" : !DrivesEnabled ? "Drives off" : "Drives on · standstill");
     }
 
     public void StopMotion()
@@ -184,7 +164,7 @@ public partial class RobotController : Node
         ClearMotion();
         _goingHome = true;
         StartSegment(HomeAngles);
-        SetStatus("Moving to home · hold enable");
+        SetStatus("Moving to home");
         return true;
     }
 
@@ -235,7 +215,7 @@ public partial class RobotController : Node
         ClearMotion();
         _playIndex = 0;
         StartSegment(_waypoints[0].AnglesDegrees);
-        SetStatus($"Running {_waypoints[0].Name} · hold enable");
+        SetStatus($"Running {_waypoints[0].Name}");
         return true;
     }
 
@@ -277,7 +257,7 @@ public partial class RobotController : Node
     public override void _Notification(int what)
     {
         // Focus loss must never leave a mouse/key jog running in the background.
-        if (what == NotificationApplicationFocusOut) HoldToRun = false;
+        if (what == NotificationApplicationFocusOut) StopMotion();
     }
 
     public override void _PhysicsProcess(double delta)
@@ -377,7 +357,7 @@ public partial class RobotController : Node
         if (IsPlaying && ++_playIndex < _waypoints.Count)
         {
             StartSegment(_waypoints[_playIndex].AnglesDegrees);
-            SetStatus($"Running {_waypoints[_playIndex].Name} · hold enable");
+            SetStatus($"Running {_waypoints[_playIndex].Name}");
         }
         else
         {
@@ -392,7 +372,6 @@ public partial class RobotController : Node
         if (!_initialized) { SetStatus("Robot is initializing"); return false; }
         if (EmergencyStopped) { SetStatus("Emergency stop is latched"); return false; }
         if (!DrivesEnabled) { SetStatus("Enable drives before moving"); return false; }
-        if (!HoldToRun) { SetStatus("Hold the enable switch to move"); return false; }
         return true;
     }
 

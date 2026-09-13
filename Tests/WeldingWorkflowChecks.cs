@@ -29,6 +29,7 @@ public partial class WeldingWorkflowChecks : Node
             var controller = nodes.OfType<RobotController>().Single();
             var gizmo = nodes.OfType<TransformGizmo>().Single();
             var camera = nodes.OfType<Camera3D>().Single();
+            var pendant = nodes.OfType<PendantPanel>().Single();
             var panel = nodes.OfType<Panel>().Single(n => n.Name == "WeldingWorkspace");
             controller.SetPhysicsProcess(false);
             workspace.SetPhysicsProcess(false);
@@ -51,7 +52,7 @@ public partial class WeldingWorkflowChecks : Node
             workspace.Generate();
             Task firstPlan = workspace.PlanningTask;
             Require(workspace.IsBusy && !gizmo.Active, "Planning locks workpiece manipulation");
-            controller.SetDrives(true); controller.HoldToRun = true;
+            controller.SetDrives(true);
             workspace.Run();
             Require(!workspace.IsSimulating, "SIMULATE cannot start while planning is busy");
             workspace._UnhandledInput(new InputEventKey { Keycode = Key.W, Pressed = true });
@@ -61,29 +62,42 @@ public partial class WeldingWorkflowChecks : Node
             Require(!workspace.IsBusy, "Successful planning releases busy state");
             var originalProgram = workspace.Program!;
 
-            controller.HoldToRun = false;
+            controller.SetDrives(false);
             workspace.Run();
-            Require(!workspace.IsSimulating, "Enable release blocks playback start");
-            controller.HoldToRun = true;
+            Require(!workspace.IsSimulating, "Drives off blocks playback start");
+            controller.SetDrives(true);
             var changed = (float[])originalProgram.StartAngles.Clone(); changed[0] += 1;
             controller.ApplyPlannedPose(changed, "Workflow setup"); controller.StopMotion();
             workspace.Run();
             Require(!workspace.IsSimulating && messages.Last().Contains("start pose changed"), "Moved robot start pose invalidates playback eligibility");
             controller.ApplyPlannedPose(originalProgram.StartAngles, "Workflow setup"); controller.StopMotion();
             workspace.Run();
-            Require(workspace.IsSimulating && controller.IsPlannedMotion, "Valid interlocks start the actual generated program");
+            Require(workspace.IsSimulating && controller.IsPlannedMotion, "Drives on starts the actual generated program without holding Space");
+            pendant._Input(new InputEventKey { Keycode = Key.Space, PhysicalKeycode = Key.Space, Pressed = false });
             workspace._PhysicsProcess(.016);
+            Require(workspace.IsSimulating, "Space release has no effect on running welding simulation");
             controller.EmergencyStop(); workspace._PhysicsProcess(.016);
             Require(!workspace.IsSimulating && !controller.MotionActive && !controller.DrivesEnabled, "E-stop halts workspace playback and clears controller motion");
             Require(!Descendants(workspace.Effects).OfType<OmniLight3D>().Any(l => l.Visible), "E-stop extinguishes the welding arc light");
-            controller.ResetEmergencyStop(); controller.SetDrives(true); controller.HoldToRun = true;
+            controller.ResetEmergencyStop(); controller.SetDrives(true);
             controller.ApplyPlannedPose(originalProgram.StartAngles, "Workflow setup"); controller.StopMotion();
-            workspace.Run(); controller.HoldToRun = false; workspace._PhysicsProcess(.016);
-            Require(!workspace.IsSimulating && !controller.MotionActive, "Releasing enable stops welding without queued continuation");
+            workspace.Run();
+            pendant._Input(new InputEventKey { Keycode = Key.Space, PhysicalKeycode = Key.Space, Pressed = true });
+            workspace._PhysicsProcess(.016);
+            Require(!workspace.IsSimulating && !controller.MotionActive && controller.DrivesEnabled, "Space press stops actual welding playback while retaining drives");
+            pendant._Input(new InputEventKey { Keycode = Key.Space, PhysicalKeycode = Key.Space, Pressed = false });
+            workspace._PhysicsProcess(.016);
+            Require(!workspace.IsSimulating && !controller.MotionActive, "Releasing Space does not resume the cancelled welding program");
+            controller.ApplyPlannedPose(originalProgram.StartAngles, "Workflow setup"); controller.StopMotion();
+            workspace.Run();
+            controller._Notification((int)NotificationApplicationFocusOut);
+            controller._Notification((int)NotificationApplicationFocusIn);
+            workspace._PhysicsProcess(.016);
+            Require(!workspace.IsSimulating && !controller.MotionActive && controller.DrivesEnabled, "Focus loss cancels welding and returning to the app cannot resume it");
 
             // Regeneration starts with an existing valid program: this previously
             // allowed old motions to run concurrently with a new collision worker.
-            controller.SetDrives(true); controller.HoldToRun = true;
+            controller.SetDrives(true);
             controller.ApplyPlannedPose(originalProgram.StartAngles, "Workflow setup"); controller.StopMotion();
             workspace.Generate(); Task replan = workspace.PlanningTask;
             Require(workspace.IsBusy && workspace.Program == null, "Regeneration discards the prior executable program immediately");

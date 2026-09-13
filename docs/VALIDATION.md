@@ -4,14 +4,14 @@ Validated 2026-09-13 on Windows x64 with Godot 4.5.1 .NET / SDK 8.0.425 and NVID
 
 | Runtime suite | Assertions passed |
 | --- | ---: |
-| RobotChecks | 69 |
-| SceneChecks | 53 |
-| ViewportChecks | 74 |
+| RobotChecks | 71 |
+| SceneChecks | 69 |
+| ViewportChecks | 86 |
 | GizmoChecks | 45 |
 | CadImportChecks | 11 |
 | WeldChecks | 336 |
-| WeldingWorkflowChecks | 25 |
-| **Total Godot runtime assertions** | **613** |
+| WeldingWorkflowChecks | 28 |
+| **Total Godot runtime assertions** | **646** |
 
 Seven additional native OpenCascade tests passed, including STEP unit conversion, curved and angular seams, assembly placement, contact recognition, winding and invalid-input rejection.
 
@@ -22,3 +22,5 @@ The shipping workspace was tested end-to-end for import, selection, planning, bu
 The Windows release built without errors or warnings and includes a self-contained .NET runtime and separate isolated CAD runtime. The exported executable imported the sample, generated its checked program and rendered active welding with visible sparks and deposited bead. Screenshots are in this directory.
 
 These checks establish software behavior for the tested cases. They do not prove global route optimality, exact continuous collision freedom for arbitrary geometry, physical welding quality or hardware safety certification. See README for the collision approximation, sampling limits and controller postprocessing requirement.
+
+Reflection/control update: SSR and SSIL are opt-in; existing settings migrate once. Static room probe excludes the robot, CAD, overlays and platform. Updated suites passed: 71 robot, 69 scene, 86 viewport, 28 workflow checks. Programs start with drives on and no held key; Space/STOP MOTION cancels them. Key release and returning from focus loss cannot resume cancelled movement. Final GPU screenshot was inspected for reflection streaks and duplicated silhouettes.

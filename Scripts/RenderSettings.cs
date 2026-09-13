@@ -6,9 +6,10 @@ namespace EstunStudio;
 public sealed class RenderSettings
 {
     private const string FilePath = "user://render-settings.cfg";
+    public const int RenderingRevision = 2;
     public bool Ssao { get; set; } = true;
-    public bool Ssil { get; set; } = true;
-    public bool Ssr { get; set; } = true;
+    public bool Ssil { get; set; } = false;
+    public bool Ssr { get; set; } = false;
     public bool Bloom { get; set; } = true;
     public float BloomStrength { get; set; } = .22f;
     public float Exposure { get; set; } = .92f;
@@ -42,12 +43,20 @@ public sealed class RenderSettings
         settings.Sparks=config.GetValue("welding","sparks",settings.Sparks).AsBool();
         settings.Smoke=config.GetValue("welding","smoke",settings.Smoke).AsBool();
         settings.BeadDetail=Mathf.Clamp(config.GetValue("welding","bead_detail",settings.BeadDetail).AsInt32(),0,2);
+        // Replace the previous unstable screen-space defaults once, including
+        // existing installations. Other operator preferences remain intact.
+        if(config.GetValue("render","revision",0).AsInt32()<RenderingRevision)
+        {
+            settings.Ssr=false;settings.Ssil=false;
+            settings.Save();
+        }
         return settings;
     }
 
     public void Save()
     {
         var config=new ConfigFile();
+        config.SetValue("render","revision",RenderingRevision);
         config.SetValue("render","ssao",Ssao);config.SetValue("render","ssil",Ssil);config.SetValue("render","ssr",Ssr);
         config.SetValue("render","bloom",Bloom);config.SetValue("render","bloom_strength",BloomStrength);
         config.SetValue("render","exposure",Exposure);config.SetValue("render","shadows",Shadows);config.SetValue("render","fog",Fog);

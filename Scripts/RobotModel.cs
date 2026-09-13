@@ -95,12 +95,12 @@ public partial class RobotModel : Node3D
         bool dark = max < .20f;
         var material = new StandardMaterial3D {
             AlbedoColor = color,
-            Metallic = dark ? .08f : chromatic ? .12f : .20f,
-            Roughness = dark ? .43f : chromatic ? .31f : .43f,
+            Metallic = 0.0f,
+            Roughness = dark ? .52f : chromatic ? .40f : .38f,
             MetallicSpecular = .5f,
             ClearcoatEnabled = !dark,
-            Clearcoat = chromatic ? .18f : .10f,
-            ClearcoatRoughness = .40f,
+            Clearcoat = .08f,
+            ClearcoatRoughness = .45f,
             CullMode = BaseMaterial3D.CullModeEnum.Back
         };
         if (color.A < .99f) material.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
