@@ -50,7 +50,7 @@ Stable HDR and a 1024-pixel room reflection probe provide material highlights. T
 
 The workspace now uses **native pixels**, with no fractional canvas scaling. Hide either sidebar; **P** toggles the pendant and the toolbar restores it. The camera recenters when a dock closes. Robot rendering defaults to **Native 100%**; exact internal dimensions are visible in the footer and Display panel. Existing blur-heavy settings migrate once to the sharp preset.
 
-Lossless CAD indexing reduced display vertex entries by **78.8%** while retaining every source triangle and normal. Two shadow-casting studio lights replace five, with fill lights retained. Short benchmark on the development RTX 3060 Laptop: **159.8 FPS** in a1440×900 window and **106.9 FPS** at native1920×1080 fullscreen (VSync disabled for measurement). Results depend on hardware and loaded geometry. See [native UI and rendering notes](docs/NATIVE-UI.md).
+Lossless CAD indexing reduced display vertex entries by **78.8%** while retaining every source triangle and normal. Two shadow-casting studio lights replace five, with fill lights retained. Short benchmark on the development RTX 3060 Laptop: **159.8 FPS** in a 1440×900 window and **106.9 FPS** at native 1920×1080 fullscreen (VSync disabled for measurement). Results depend on hardware and loaded geometry. See [native UI and rendering notes](docs/NATIVE-UI.md).
 
 The stage uses HDR reflections, metal PBR, ACES tone mapping and studio lights. Welding adds flickering arc illumination, spatter, rising smoke and a visible deposited bead that cools from incandescent metal. Thermal distortion and physical metallurgy are not simulated.
 
@@ -83,7 +83,7 @@ The app, UI, robot control, kinematics, collision checking, optimization, playba
 .\tools\Export.ps1
 ```
 
-Export runs all seven Godot test scenes and copies the CAD runtime. `.tools`, temporary research, native reference archives and test screenshots are excluded from Git.
+Export runs all configured Godot test scenes and copies the CAD runtime. `.tools`, temporary research, native reference archives and test screenshots are excluded from Git.
 
 ## Validation
 
