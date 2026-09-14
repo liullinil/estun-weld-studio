@@ -56,6 +56,8 @@ The stage uses HDR reflections, metal PBR, ACES tone mapping and studio lights. 
 
 ## Teach pendant
 
+The hideable pendant is styled as a handheld industrial device: graphite molded housing, amber grip bumpers, recessed pale LCD, raised physical keys and a red mushroom emergency stop seated in a yellow collar. The stop cap shows its latched state, and the drive key has a live indicator. Text remains native-resolution and the device scrolls in short windows instead of shrinking its controls.
+
 Enable DRIVES and hold an on-screen −/+ key or Left/Right to jog; release the jog control to stop. Up/Down selects an axis. **HOME, RUN and SIMULATE start with one click**, without holding Space. **Space is a stop shortcut**, and the former enabling-device button is now **STOP MOTION**. JOINT moves one motor, WORLD jogs the TCP in base coordinates and TOOL uses the tool frame. RESET clears E-stop and leaves drives off. Focus loss stops motion; returning to the window never resumes it automatically.
 
 TCP is now the torch wire tip with an explicit transform from the native flange. Coordinates are right-handed Y-up, position in millimeters, orientation using Godot YXZ Euler decomposition. A/B/C jog rotates about X/Y/Z; it is not KUKA's native ABC convention.

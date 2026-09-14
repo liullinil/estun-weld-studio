@@ -36,6 +36,9 @@ public partial class PendantLayoutChecks : Node
             var pendant = new PendantPanel(); dock.AddChild(pendant); pendant.Build(controller);
             pendant.SetProcess(false);
             pendant.CloseRequested += dock.Hide;
+            var stopButton=Descendants(pendant).OfType<MushroomStopButton>().Single();
+            Require(stopButton.CustomMinimumSize.X>=64 && stopButton.CustomMinimumSize.Y>=64,"Physical mushroom stop retains an accessible hit target");
+            Require(Descendants(pendant).OfType<PendantShell>().Count()==1,"Pendant has its own manufactured enclosure");
 
             foreach (int width in new[] { 320, 328, 384 })
             {
@@ -60,6 +63,13 @@ public partial class PendantLayoutChecks : Node
             Require(dock.GetVScrollBar().Visible, "Short windows scroll the pendant instead of shrinking its fonts");
             Require(pendant.Size.X <= 340 && pendant.Scale == Vector2.One, "Scrolling keeps native typography and available width");
 
+            controller.SetDrives(true);
+            pendant._Process(.05);
+            Require(Descendants(pendant).OfType<PhysicalKeyButton>().Single(b=>b.Name=="Drives").Illuminated,"Drive key indicator follows controller drive state");
+            stopButton.EmitSignal(BaseButton.SignalName.Pressed);
+            Require(controller.EmergencyStopped && !controller.DrivesEnabled && stopButton.Latched,"Mushroom stop physically latches and disables drives");
+            controller.ResetEmergencyStop();pendant._Process(.05);
+            Require(!stopButton.Latched,"Controller reset releases the visual mushroom latch");
             controller.SetDrives(true);
             controller.GoHome();
             Descendants(pendant).OfType<Button>().Single(b => b.Name == "HidePendant").EmitSignal(BaseButton.SignalName.Pressed);

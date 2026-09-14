@@ -14,6 +14,7 @@ public partial class PendantPanel : Control
     private static readonly Color Ink = new("#e7ecef"), Muted = new("#99a6ae");
     private static readonly Color Orange = new("#eaa05b"), Green = new("#86c9a6");
     private static readonly Color Surface = new("#222a30"), Border = new("#39434b");
+    private static readonly Color ScreenInk = new("#293932"), ScreenMuted = new("#66756d");
     private static readonly string[] JointNames = { "J1", "J2", "J3", "J4", "J5", "J6" };
     private static readonly string[] JointCaptions = { "Base", "Shoulder", "Elbow", "Wrist 1", "Wrist 2", "Flange" };
     private static readonly string[] TcpNames = { "X", "Y", "Z", "A", "B", "C" };
@@ -27,6 +28,8 @@ public partial class PendantPanel : Control
     private Button _drivesButton = null!, _emergencyButton = null!;
     private HSlider _speedSlider = null!;
     private VBoxContainer _content = null!;
+    private VBoxContainer _screen = null!;
+    private MushroomStopButton _mushroom = null!;
     private JogFrame _frame;
     private int _selectedAxis, _keyboardJogDirection, _pointerJogAxis = -1;
     private bool _lastEstop, _lastDrives;
@@ -40,20 +43,33 @@ public partial class PendantPanel : Control
         CustomMinimumSize = new Vector2(320, 0);
         SizeFlagsHorizontal = SizeFlags.ExpandFill;
         _font = ResourceLoader.Exists("res://Assets/Fonts/Inter-Regular.ttf") ? GD.Load<Font>("res://Assets/Fonts/Inter-Regular.ttf") : ThemeDB.FallbackFont;
-        _semibold = ResourceLoader.Exists("res://Assets/Fonts/Inter-SemiBold.ttf") ? GD.Load<Font>("res://Assets/Fonts/Inter-SemiBold.ttf") : _font;
+        _semibold = new FontVariation { BaseFont=_font, VariationOpentype=new Godot.Collections.Dictionary { ["wght"]=650 } };
         AddThemeFontOverride("font", _font);
         AddThemeFontSizeOverride("font_size", 14);
         var surface = new PanelContainer { Name = "PendantSurface", MouseFilter = MouseFilterEnum.Stop };
         AddChild(surface);
         surface.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
-        surface.AddThemeStyleboxOverride("panel", Flat(new Color("#1a2228"), 12, Border, 1));
+        surface.AddThemeStyleboxOverride("panel",new StyleBoxEmpty());
+        var shell=new PendantShell {Name="MoldedEnclosure"};AddChild(shell);MoveChild(shell,0);shell.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
         var padding = new MarginContainer { MouseFilter = MouseFilterEnum.Pass };
-        SetMargins(padding, 14);
+        SetMargins(padding, 18);
         surface.AddChild(padding);
         _content = new VBoxContainer { MouseFilter = MouseFilterEnum.Pass };
-        _content.AddThemeConstantOverride("separation", 10);
+        _content.AddThemeConstantOverride("separation", 8);
         padding.AddChild(_content);
         BuildHeader();
+        var bezel=new PanelContainer {Name="RecessedTouchscreen"};_content.AddChild(bezel);
+        var bezelStyle=Flat(new Color("#0d1518"),9,new Color("#6b726c"),1);
+        bezelStyle.ContentMarginLeft=3;bezelStyle.ContentMarginRight=3;bezelStyle.ContentMarginTop=3;bezelStyle.ContentMarginBottom=4;
+        bezel.AddThemeStyleboxOverride("panel",bezelStyle);
+        var glass=new PanelContainer();bezel.AddChild(glass);
+        var glassStyle=Flat(new Color("#e2e8df"),6,new Color("#a9b9a9"),1);
+        glassStyle.ContentMarginLeft=7;glassStyle.ContentMarginRight=7;glassStyle.ContentMarginTop=7;glassStyle.ContentMarginBottom=7;
+        glass.AddThemeStyleboxOverride("panel",glassStyle);
+        _screen=new VBoxContainer();_screen.AddThemeConstantOverride("separation",6);glass.AddChild(_screen);
+        var screenHeader=Row(_screen,4);
+        _statusLabel=MakeLabel(screenHeader,"Drives off",12,ScreenMuted,true);_statusLabel.SizeFlagsHorizontal=SizeFlags.ExpandFill;
+        MakeLabel(screenHeader,"T1  /  MANUAL",12,ScreenMuted);
         BuildJogControls();
         BuildSpeedControl();
         BuildHardwareKeys();
@@ -64,7 +80,7 @@ public partial class PendantPanel : Control
         UpdateMinimumHeight();
     }
 
-    private void UpdateMinimumHeight() => CustomMinimumSize = new Vector2(320, Mathf.Ceil(_content.GetCombinedMinimumSize().Y + 30));
+    private void UpdateMinimumHeight() => CustomMinimumSize = new Vector2(320, Mathf.Ceil(_content.GetCombinedMinimumSize().Y + 38));
 
     private void BuildHeader()
     {
@@ -72,33 +88,25 @@ public partial class PendantPanel : Control
         var titles = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         titles.AddThemeConstantOverride("separation", 2);
         header.AddChild(titles);
-        MakeLabel(titles, "Teach pendant", 18, Ink, true);
-        MakeLabel(titles, "ESTUN S20-180 PRO", 12, Muted);
-        var close = MakeButton(header, "Hide", 48, 34);
+        MakeLabel(titles, "ESTUN", 24, new Color("#f0f1eb"), true);
+        MakeLabel(titles, "TEACH PENDANT", 12, new Color("#b4bbb6"));
+        var detail=Row(titles,6);
+        MakeLabel(detail, "S20-180 PRO", 12, Muted).SizeFlagsHorizontal=SizeFlags.ExpandFill;
+        var close = MakeButton(detail, "Hide", 46, 25);
+        close.AddThemeFontSizeOverride("font_size",12);
         close.Name = "HidePendant";
         close.TooltipText = "Hide the pendant and stop motion. Reopen it from the top toolbar.";
         close.Pressed += () => { _pointerJogAxis = -1; _keyboardJogDirection = 0; _controller!.StopMotion(); CloseRequested?.Invoke(); };
-        var safety = Row(_content, 8);
-        _statusLabel = MakeLabel(safety, "Drives off", 12, Muted, true);
-        _statusLabel.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-        _statusLabel.CustomMinimumSize = new Vector2(80, 32);
-        _emergencyButton = MakeButton(safety, "E-STOP", 88, 32);
+        _mushroom=new MushroomStopButton {CustomMinimumSize=new Vector2(80,80),SizeFlagsVertical=SizeFlags.ShrinkCenter,FocusMode=FocusModeEnum.None};header.AddChild(_mushroom);
+        _emergencyButton=_mushroom;
         _emergencyButton.Name = "EmergencyStop";
-        _emergencyButton.AddThemeStyleboxOverride("normal", Flat(new Color("#76362f"), 6, new Color("#b66d60"), 1));
-        _emergencyButton.AddThemeStyleboxOverride("hover", Flat(new Color("#97443a"), 6, new Color("#d79676"), 1));
-        _emergencyButton.AddThemeStyleboxOverride("pressed", Flat(new Color("#b64d3c"), 6, new Color("#e9b05f"), 1));
-        _emergencyButton.AddThemeColorOverride("font_color", new Color("#fff0e7"));
         _emergencyButton.TooltipText = "Emergency stop · Escape\nStops motion and disables drives. Press RESET to clear the latch.";
         _emergencyButton.Pressed += () => { EmergencyStop(); Toast?.Invoke("Emergency stop · Press RESET, then enable DRIVES."); };
-        var separator = new HSeparator();
-        separator.AddThemeStyleboxOverride("separator", new StyleBoxLine { Color = Border, Thickness = 1 });
-        separator.AddThemeConstantOverride("separation", 1);
-        _content.AddChild(separator);
     }
 
     private void BuildJogControls()
     {
-        var tabs = Row(_content, 4);
+        var tabs = Row(_screen, 4);
         string[] titles = { "JOINT", "WORLD", "TOOL" };
         string[] tips =
         {
@@ -109,15 +117,15 @@ public partial class PendantPanel : Control
         for (int i = 0; i < 3; i++)
         {
             int frame = i;
-            _tabs[i] = MakeButton(tabs, titles[i], 0, 34);
+            _tabs[i] = MakeButton(tabs, titles[i], 0, 32);
             _tabs[i].SizeFlagsHorizontal = SizeFlags.ExpandFill;
             _tabs[i].TooltipText = tips[i];
             _tabs[i].Pressed += () => SelectFrame((JogFrame)frame);
         }
-        _frameDescription = MakeLabel(_content, "Axis position · degrees", 12, Muted);
+        _frameDescription = MakeLabel(_screen, "Axis position · degrees", 12, ScreenMuted);
         var rows = new VBoxContainer { Name = "AxisRows" };
         rows.AddThemeConstantOverride("separation", 5);
-        _content.AddChild(rows);
+        _screen.AddChild(rows);
         for (int i = 0; i < 6; i++)
         {
             int axis = i;
@@ -136,16 +144,16 @@ public partial class PendantPanel : Control
             inset.AddThemeConstantOverride("margin_bottom", 0);
             var readout = Row(inset, 3);
             readout.MouseFilter = MouseFilterEnum.Ignore;
-            _axisNames[i] = MakeLabel(readout, JointNames[i], 14, Ink, true);
+            _axisNames[i] = MakeLabel(readout, JointNames[i], 14, ScreenInk, true);
             _axisNames[i].CustomMinimumSize = new Vector2(25, 0);
-            _axisValues[i] = MakeLabel(readout, "0.00", 16, Ink);
+            _axisValues[i] = MakeLabel(readout, "0.00", 16, ScreenInk);
             _axisValues[i].SizeFlagsHorizontal = SizeFlags.ExpandFill;
             _axisValues[i].HorizontalAlignment = HorizontalAlignment.Right;
             _axisValues[i].CustomMinimumSize = new Vector2(68, 0);
-            _axisUnits[i] = MakeLabel(readout, "°", 12, Muted);
-            _axisUnits[i].CustomMinimumSize = new Vector2(23, 0);
+            _axisUnits[i] = MakeLabel(readout, "°", 12, ScreenMuted);
+            _axisUnits[i].CustomMinimumSize = new Vector2(20, 0);
             _axisUnits[i].HorizontalAlignment = HorizontalAlignment.Right;
-            Button minus = MakeButton(row, "−", 48, 42), plus = MakeButton(row, "+", 48, 42);
+            Button minus = PhysicalButton(row, "−", 48, 42), plus = PhysicalButton(row, "+", 48, 42);
             minus.AddThemeFontSizeOverride("font_size", 22);
             plus.AddThemeFontSizeOverride("font_size", 22);
             BindJog(minus, axis, -1); BindJog(plus, axis, 1);
@@ -156,10 +164,10 @@ public partial class PendantPanel : Control
     {
         var group = new VBoxContainer();
         group.AddThemeConstantOverride("separation", 2);
-        _content.AddChild(group);
+        _screen.AddChild(group);
         var title = Row(group, 8);
-        MakeLabel(title, "Speed override", 12, Muted).SizeFlagsHorizontal = SizeFlags.ExpandFill;
-        _speedValue = MakeLabel(title, "25%", 14, Ink, true);
+        MakeLabel(title, "Speed override", 12, ScreenMuted).SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        _speedValue = MakeLabel(title, "25%", 14, ScreenInk, true);
         _speedSlider = new HSlider
         {
             Name = "SpeedOverride", MinValue = 1, MaxValue = 100, Step = 1,
@@ -167,9 +175,9 @@ public partial class PendantPanel : Control
             FocusMode = FocusModeEnum.None, MouseDefaultCursorShape = CursorShape.PointingHand,
             TooltipText = "Manual jogging and program playback speed: 1–100%."
         };
-        StyleBoxFlat track = Flat(new Color("#39454f"), 2);
+        StyleBoxFlat track = Flat(new Color("#bac8b9"), 2);
         track.ContentMarginTop = track.ContentMarginBottom = 2;
-        StyleBoxFlat fill = Flat(Orange, 2);
+        StyleBoxFlat fill = Flat(new Color("#526e60"), 2);
         fill.ContentMarginTop = fill.ContentMarginBottom = 2;
         _speedSlider.AddThemeStyleboxOverride("slider", track);
         _speedSlider.AddThemeStyleboxOverride("grabber_area", fill);
@@ -194,8 +202,7 @@ public partial class PendantPanel : Control
         };
         var stop = HardwareButton(power, "STOP MOTION", out _);
         stop.Name = "StopMotion";
-        stop.AddThemeStyleboxOverride("normal", Flat(new Color("#46382c"), 6, new Color("#796044"), 1));
-        stop.AddThemeStyleboxOverride("hover", Flat(new Color("#5b4430"), 6, Orange, 1));
+        ((PhysicalKeyButton)stop).Accent=Orange;
         stop.TooltipText = "Stop every robot motion · Space\nDrives remain enabled.";
         stop.ButtonDown += StopMotion;
         var programHeader = Row(_content, 8);
@@ -263,7 +270,8 @@ public partial class PendantPanel : Control
                 };
             }
         }
-        _motionHint = MakeLabel(_content, "Space  Stop     Esc  Emergency stop", 12, Muted);
+        _motionHint = MakeLabel(_content, "SPACE  STOP   ·   ESC  E-STOP", 12, Muted);
+        _motionHint.HorizontalAlignment=HorizontalAlignment.Center;
     }
 
     public override void _Input(InputEvent input)
@@ -362,10 +370,10 @@ public partial class PendantPanel : Control
         for (int i = 0; i < 3; i++)
         {
             bool active = i == (int)frame;
-            _tabs[i].AddThemeStyleboxOverride("normal", Flat(active ? new Color("#494031") : Surface, 5, active ? new Color("#494031") : Border, 1));
-            _tabs[i].AddThemeStyleboxOverride("hover", Flat(active ? new Color("#594c37") : new Color("#35434c"), 5));
-            _tabs[i].AddThemeColorOverride("font_color", active ? new Color("#f2f5ee") : Muted);
-            _tabs[i].AddThemeColorOverride("font_hover_color", active ? new Color("#ffffff") : Ink);
+            _tabs[i].AddThemeStyleboxOverride("normal", Flat(active ? new Color("#425d50") : new Color("#d3ddcf"), 4, active ? new Color("#425d50") : new Color("#bac9b9"), 1));
+            _tabs[i].AddThemeStyleboxOverride("hover", Flat(active ? new Color("#567261") : new Color("#c1d2bc"), 4));
+            _tabs[i].AddThemeColorOverride("font_color", active ? new Color("#f2f5ee") : ScreenMuted);
+            _tabs[i].AddThemeColorOverride("font_hover_color", active ? Colors.White : ScreenInk);
         }
         _frameDescription.Text = frame switch
         {
@@ -394,8 +402,10 @@ public partial class PendantPanel : Control
         for (int i = 0; i < 6; i++)
         {
             bool active = i == axis;
-            _rowSelectors[i].AddThemeStyleboxOverride("normal", Flat(active ? new Color("#323d44") : new Color("#202930"), 4, active ? new Color("#657982") : new Color("#303d46"), 1));
-            _axisNames[i].AddThemeColorOverride("font_color", active ? Orange : Ink);
+            _rowSelectors[i].AddThemeStyleboxOverride("normal", Flat(active ? new Color("#cedfcb") : new Color("#eaf0e5"), 4, active ? new Color("#99b594") : new Color("#c4d0c0"), 1));
+            _rowSelectors[i].AddThemeStyleboxOverride("hover",Flat(new Color("#d9e6d2"),4,new Color("#9db396"),1));
+            _rowSelectors[i].AddThemeStyleboxOverride("pressed",Flat(new Color("#bdcfb5"),4));
+            _axisNames[i].AddThemeColorOverride("font_color", active ? new Color("#346545") : ScreenInk);
         }
     }
 
@@ -467,10 +477,11 @@ public partial class PendantPanel : Control
         if (_controller is null || _drivesCaption is null) return;
         _lastEstop = _controller.EmergencyStopped;
         _lastDrives = _controller.DrivesEnabled;
+        _mushroom.Latched=_lastEstop;
         _drivesCaption.Text = _lastDrives ? "DRIVES ON" : "DRIVES OFF";
         _drivesCaption.AddThemeColorOverride("font_color", _lastDrives ? Green : new Color("#d8dfda"));
-        _drivesButton.AddThemeStyleboxOverride("normal", Flat(_lastDrives ? new Color("#2f4840") : new Color("#30393a"), 7, _lastDrives ? new Color("#6ea58a") : new Color("#566461"), 1));
-        _motionHint.Text = _lastEstop ? "Emergency stop active · Press RESET" : "Space  Stop     Esc  Emergency stop";
+        if(_drivesButton is PhysicalKeyButton key){key.Accent=Green;key.Illuminated=_lastDrives;}
+        _motionHint.Text = _lastEstop ? "E-STOP ACTIVE  ·  PRESS RESET" : "SPACE  STOP   ·   ESC  E-STOP";
         _motionHint.AddThemeColorOverride("font_color", _lastEstop ? new Color("#f09b87") : Muted);
         RefreshReadouts();
     }
@@ -495,7 +506,7 @@ public partial class PendantPanel : Control
         _speedValue.Text = Math.Round(_controller.SpeedOverride * 100).ToString(CultureInfo.InvariantCulture) + "%";
         string status = _controller.EmergencyStopped ? "Emergency stopped" : !_controller.DrivesEnabled ? "Drives off" : !_controller.LastIkSucceeded ? "TCP unreachable" : _controller.Status.Contains("limit", StringComparison.OrdinalIgnoreCase) ? "Joint limit reached" : _controller.IsPlaying ? "Program running" : _controller.MotionActive ? "Motion active" : "Ready to move";
         _statusLabel.Text = status;
-        _statusLabel.AddThemeColorOverride("font_color", _controller.EmergencyStopped ? new Color("#eea38e") : !_controller.LastIkSucceeded ? Orange : _controller.DrivesEnabled ? Green : Muted);
+        _statusLabel.AddThemeColorOverride("font_color", _controller.EmergencyStopped ? new Color("#a74232") : !_controller.LastIkSucceeded ? new Color("#946827") : _controller.DrivesEnabled ? new Color("#356d48") : ScreenMuted);
         _waypointLabel.Text = $"{_controller.Waypoints.Count} points";
         _runCaption.Text = _controller.IsPlaying || _controller.MotionActive ? "STOP" : "RUN";
     }
@@ -538,12 +549,17 @@ public partial class PendantPanel : Control
 
     private Button HardwareButton(Node parent, string text, out Label caption, float height = 40)
     {
-        var button = MakeButton(parent, "", 0, height);
+        var button = PhysicalButton(parent, "", 0, height);
         button.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         caption = MakeLabel(button, text, 12, Ink, true);
         caption.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
         caption.HorizontalAlignment = HorizontalAlignment.Center;
         return button;
+    }
+    private Button PhysicalButton(Node parent,string text,float width,float height)
+    {
+        var button=new PhysicalKeyButton {Text=text,CustomMinimumSize=new Vector2(width,height),FocusMode=FocusModeEnum.None,MouseDefaultCursorShape=CursorShape.PointingHand};
+        button.AddThemeFontOverride("font",_semibold);button.AddThemeFontSizeOverride("font_size",12);parent.AddChild(button);return button;
     }
 
     private static void SetMargins(MarginContainer container, int margin)
