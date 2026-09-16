@@ -17,7 +17,7 @@ let importing=false,activePlan=null;
 const cad=new CadWorker(python,worker),importJobs=new Map(),importCache=new Map();let cachedBytes=0;
 cad.warm().catch(error=>console.error('CAD warmup:',error.message));
 function cacheDocument(key,document,bytes){if(bytes>32*1024*1024)return;while(importCache.size>=4||cachedBytes+bytes>64*1024*1024){const first=importCache.keys().next().value;if(!first)break;cachedBytes-=importCache.get(first).bytes;importCache.delete(first);}importCache.set(key,{document,bytes});cachedBytes+=bytes;}
-function importProgress(message){return message.startsWith('Reading')?.08:message.startsWith('Tessellating')?.25:message.startsWith('Recognizing')?.55:message.startsWith('Checking')?.72:message.startsWith('Imported')?.95:.05;}
+function importProgress(message){return message.startsWith('Reading')?.08:message.startsWith('Sewing')?.18:message.startsWith('Tessellating')?.25:message.startsWith('Recognizing')?.55:message.startsWith('Checking')?.72:message.startsWith('Imported')?.95:.05;}
 async function runImport(job,file){let temp;const started=performance.now();
  try{const key=createHash('sha256').update(file.buffer).digest('hex'),cached=importCache.get(key);let document;
   if(cached){document=cached.document;job.message='Reusing unchanged CAD geometry';}else{temp=await mkdtemp(path.join(tmpdir(),'ency-cad-'));const input=path.join(temp,'part'+path.extname(file.originalname).toLowerCase()),output=path.join(temp,'part.json');await writeFile(input,file.buffer);file.buffer=null;

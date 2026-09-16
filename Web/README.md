@@ -12,6 +12,8 @@ The browser uses Three.js/WebGL 2, original ENCY S20-180 Pro CAD, native joint f
 
 The sample loads automatically with no seams selected for processing. STEP/STP and IGES/IGS are supported in both versions, including millimetre/inch units. IGES surface-only models report the absence of solid-contact recognition. Angle and length filters identify potential seams; Concave/contact is off by default. Drag the two rays on the 90-degree protractor or enter exact angle values. Length has minimum/maximum sliders and exact millimetre inputs. Candidates outside either range are absent from the list, viewport, propagation graph and work order. Click a candidate in the scene or list to add it; click again to remove it. Propagation grows one connected seam at a time in deterministic breadth-first order, from the clicked line through neighbors and their neighbors to the entire connected component. Connections use a 0.02 mm endpoint tolerance; midpoint crossings are not connections. Changing scope recalculates that click from its initial snapshot; removal recalls the scope used when each line was added. Candidates cannot be deleted. Narrowing filters prunes the work order; widening does not automatically restore selection.
 
+Surface-only IGES is automatically sewn with a capped 0.001 mm tolerance, preserving every face. Valid closed shells become outward-oriented solids; remaining open surfaces are kept and reported. Existing solid assemblies remain separate. CAD is rendered double-sided, and missing triangulations fail explicitly rather than dropping faces. See [IGES repair validation](../docs/IGES-HEALING.md) for the reported `49-1.igs` and `Part.IGS` models.
+
 The protractor starts at zero on the left, with its fixed right-angle profile opening to the right. Only a left-button press on a round handle starts dragging; pointer capture keeps the drag active outside the instrument and release ends it anywhere. Propagation closes on any left click outside its popup. SelectAll / unSelectAll affect the current candidate set. All application UI, hints, warnings and Lua comments are English.
 
 Zoom has no application distance clamp and follows the cursor/surface with adaptive clipping for tiny seams. Picking tolerance scales with pixels. Deselected warning seams return to normal color; warning hints appear only for red selected/problem seams, including hover in the 3D viewport. A separate circular Workpiece gizmo toggle disables the entire translation/rotation gizmo and its hit regions. TCP +Z points outward along the torch wire; TOOL jogging uses this displayed frame while planning retains its established internal approach convention.
@@ -63,10 +65,10 @@ Open `http://127.0.0.1:18740/hyper/`. For development use `npm run dev` with the
 ## Server layout
 
 - `/srv/hyper/releases/20260916` — packaged native core, frontend and Docker build.
-- Current Docker image `estun-hyper:20260916-desktop`; container `hyper-app-v7`.
+- Current Docker image `estun-hyper:20260917-iges-healing`; container `hyper-app-v8`.
 - Older frontend-only releases remain at `/srv/hyper/releases/20260916-view-cube` and `/srv/hyper/releases/20260916-workspace` for rollback; the current complete release supersedes them.
 - Internal port 18740, Docker network `swisscam-studio_default`; no additional public port.
-- Current complete release: `/srv/hyper/releases/20260916-desktop`. Caddy `handle_path /hyper/*` forwards to `hyper-app-v7:18740`; the existing fallback still forwards to `web:80`. `/srv/hyper/downloads` is mounted read-only as the desktop download directory.
+- Complete base release: `/srv/hyper/releases/20260916-desktop`; current importer/frontend patch: `/srv/hyper/releases/20260917-iges-healing`. Caddy `handle_path /hyper/*` forwards to `hyper-app-v8:18740`; the existing fallback still forwards to `web:80`. `/srv/hyper/downloads` is mounted read-only as the desktop download directory.
 - Native Godot bridge stays on container loopback 18741. Node gateway handles uploads, API proxy and static assets.
 - Container limits: 2,300 MB memory, 1.5 CPU, 256 processes; restart unless stopped.
 - `/srv/hyper/Caddyfile.before-hyper` is the original HTTPS routing backup. `/srv/hyper/root-before.html` and `root-after.html` record unchanged root content.

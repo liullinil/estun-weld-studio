@@ -188,6 +188,45 @@ class CadImportChecks(unittest.TestCase):
         bad.write_text("invalid IGES")
         with self.assertRaises(ValueError):cad.import_step(bad,self.directory / "bad-iges.json")
 
+    def test_iges_independent_surfaces_are_sewn_and_oriented_without_losing_faces(self):
+        from OCP.IGESControl import IGESControl_Writer
+        from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+        source=self.directory / "independent-patches.igs"
+        writer=IGESControl_Writer("MM",0)
+        shape=BRepPrimAPI_MakeBox(40,50,60).Shape()
+        for face in cad.shapes(shape,cad.TopAbs_FACE):writer.AddShape(face)
+        self.assertTrue(writer.Write(str(source)))
+        destination=self.directory / "independent-patches.json"
+        cad.import_step(source,destination)
+        data=json.loads(destination.read_text())
+        self.assertEqual(data['faceCount'],6)
+        self.assertEqual(data['solidCount'],1)
+        self.assertEqual(data['healing']['sourceFaces'],data['healing']['retainedFaces'])
+        self.assertEqual(data['healing']['freeEdges'],0)
+        self.assertEqual(len(data['seams']),12)
+        vertices=list(zip(*[iter(data['vertices'])]*3));normals=list(zip(*[iter(data['normals'])]*3))
+        center=[(max(p[i] for p in vertices)+min(p[i] for p in vertices))*.5 for i in range(3)]
+        for point,normal in zip(vertices,normals):
+            self.assertGreater(cad.dot([point[i]-center[i] for i in range(3)],normal),0)
+
+    def test_iges_open_surface_is_preserved_and_not_filled(self):
+        from OCP.IGESControl import IGESControl_Writer
+        from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+        faces=cad.shapes(BRepPrimAPI_MakeBox(40,50,60).Shape(),cad.TopAbs_FACE)
+        source=self.directory / 'open-surface.iges';writer=IGESControl_Writer('MM',0)
+        for face in faces[:5]:writer.AddShape(face)
+        writer.Write(str(source));destination=self.directory/'open-surface.json';cad.import_step(source,destination)
+        data=json.loads(destination.read_text());self.assertEqual(data['faceCount'],5);self.assertEqual(data['solidCount'],0)
+        self.assertGreater(data['healing']['freeEdges'],0);self.assertTrue(data['warnings'])
+
+    def test_existing_iges_solid_assembly_stays_separate(self):
+        from OCP.IGESControl import IGESControl_Writer
+        reader=cad.STEPControl_Reader();reader.ReadFile(str(ROOT/'Assets/Samples/WeldingBracket.step'));reader.TransferRoots()
+        source=self.directory/'iges-assembly.igs';writer=IGESControl_Writer('MM',1);writer.AddShape(reader.OneShape());writer.Write(str(source))
+        destination=self.directory/'iges-assembly.json';cad.import_step(source,destination);data=json.loads(destination.read_text())
+        self.assertEqual(data['solidCount'],3);self.assertEqual(data['faceCount'],18);self.assertNotIn('healing',data)
+        self.assertGreaterEqual(len([s for s in data['seams'] if s['kind']=='Part contact']),8)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

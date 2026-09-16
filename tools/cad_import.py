@@ -17,7 +17,9 @@ from OCP.BRep import BRep_Tool, BRep_Builder
 from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Section
 from OCP.BRepBndLib import BRepBndLib
-from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex, BRepBuilderAPI_Sewing
+from OCP.BRepCheck import BRepCheck_Analyzer
+from OCP.ShapeFix import ShapeFix_Solid
 from OCP.BRepClass3d import BRepClass3d_SolidClassifier
 from OCP.BRepExtrema import BRepExtrema_DistShapeShape
 from OCP.BRepLProp import BRepLProp_SLProps
@@ -29,7 +31,7 @@ from OCP.IFSelect import IFSelect_RetDone
 from OCP.Interface import Interface_Static
 from OCP.STEPControl import STEPControl_Reader, STEPControl_Writer, STEPControl_AsIs
 from OCP.IGESControl import IGESControl_Reader
-from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SOLID, TopAbs_REVERSED, TopAbs_IN
+from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SOLID, TopAbs_SHELL, TopAbs_REVERSED, TopAbs_IN
 from OCP.TopExp import TopExp, TopExp_Explorer
 from OCP.TopLoc import TopLoc_Location
 from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape, TopTools_IndexedMapOfShape
@@ -43,6 +45,7 @@ MAX_EDGE_CANDIDATES = 20000
 MAX_SEAM_SAMPLES = 250000
 CONTACT_SOLID_LIMIT = 30
 CONTACT_FACE_LIMIT = 2500
+IGES_SEWING_TOLERANCE_MM = .001
 
 
 def progress(message):
@@ -215,16 +218,70 @@ def seam_key(seam):
     return tuple(sorted([a, b])), mean
 
 
+def heal_iges_surfaces(shape, warnings):
+    """Connect independent IGES patches without merging existing solid assemblies.
+
+    Keep surface geometry and every face; use a fixed, capped 1 micron tolerance
+    in normalized millimetres. Closed shells acquire consistent outward normals.
+    Open shells remain surfaces and are never filled or presented as closed solids.
+    """
+    if shapes(shape, TopAbs_SOLID):
+        return shape, None
+    original_faces = shapes(shape, TopAbs_FACE)
+    if not original_faces:
+        return shape, None
+    progress(f"Sewing {len(original_faces):,} IGES faces at {IGES_SEWING_TOLERANCE_MM:g} mm…")
+    sewing = BRepBuilderAPI_Sewing(IGES_SEWING_TOLERANCE_MM, True, True, True, False)
+    sewing.SetMaxTolerance(IGES_SEWING_TOLERANCE_MM)
+    sewing.SetLocalTolerancesMode(False)
+    sewing.Add(shape)
+    sewing.Perform()
+    sewn = sewing.SewedShape()
+    if sewn.IsNull() or len(shapes(sewn, TopAbs_FACE)) != len(original_faces) or sewing.NbDeletedFaces() or not BRepCheck_Analyzer(sewn).IsValid():
+        warnings.append("IGES surface sewing could not preserve every face; original surfaces retained.")
+        return shape, None
+    builder = BRep_Builder()
+    result = TopoDS_Compound()
+    builder.MakeCompound(result)
+    covered = TopTools_IndexedMapOfShape()
+    closed_solids = 0
+    for item in shapes(sewn, TopAbs_SHELL):
+        shell = TopoDS.Shell_s(item)
+        shell_faces = shapes(shell, TopAbs_FACE)
+        output = shell
+        if shell.Closed():
+            solid = ShapeFix_Solid().SolidFromShell(shell)
+            if not solid.IsNull() and BRepCheck_Analyzer(solid).IsValid() and len(shapes(solid, TopAbs_FACE)) == len(shell_faces):
+                output = solid
+                closed_solids += 1
+        builder.Add(result, output)
+        for face in shell_faces:
+            covered.Add(face)
+    for face in shapes(sewn, TopAbs_FACE):
+        if not covered.Contains(face):
+            builder.Add(result, face)
+    if len(shapes(result, TopAbs_FACE)) != len(original_faces):
+        warnings.append("IGES shell reconstruction could not preserve every face; sewn surfaces retained.")
+        result = sewn
+        closed_solids = 0
+    metadata = {"sewn": True, "toleranceMm": IGES_SEWING_TOLERANCE_MM,
+                "sourceFaces": len(original_faces), "retainedFaces": len(shapes(result, TopAbs_FACE)),
+                "closedSolids": closed_solids, "freeEdges": sewing.NbFreeEdges()}
+    return result, metadata
+
+
 def triangulate(shape, faces):
     progress(f"Tessellating {len(faces):,} CAD faces…")
     mesher = BRepMesh_IncrementalMesh(shape, .18, False, .18, True)
     if not mesher.IsDone():
         raise ValueError("OpenCascade tessellation failed")
     vertices, normals, indices = [], [], []
-    for face in faces:
+    missing_faces = []
+    for face_index, face in enumerate(faces):
         location = TopLoc_Location()
         tri = BRep_Tool.Triangulation_s(face, location)
-        if tri is None:
+        if tri is None or tri.NbTriangles() == 0:
+            missing_faces.append(face_index + 1)
             continue
         if len(indices) // 3 + tri.NbTriangles() > MAX_TRIANGLES:
             raise ValueError(f"Model exceeds {MAX_TRIANGLES:,} triangles; simplify STEP before import")
@@ -265,6 +322,8 @@ def triangulate(shape, faces):
                     fallback_normals[vertex][j] += n[j]
         for i, normal in enumerate(local_normals):
             normals.extend(normal if normal is not None else normalized(fallback_normals[i]))
+    if missing_faces:
+        raise ValueError(f"OpenCascade could not tessellate {len(missing_faces)} of {len(faces)} CAD faces (face IDs: {missing_faces[:12]}). Import stopped instead of displaying an incomplete model.")
     if not indices:
         raise ValueError("STEP file contains no tessellatable surfaces")
     return vertices, normals, indices
@@ -382,12 +441,19 @@ def import_step(source, destination):
     solids = shapes(shape, TopAbs_SOLID)
     if len(faces) > MAX_FACES:
         raise ValueError(f"Model exceeds {MAX_FACES:,} faces; import a smaller subassembly")
-    vertices, normals, indices = triangulate(shape, faces)
     warnings = []
+    healing = None
+    if is_iges:
+        shape, healing = heal_iges_surfaces(shape, warnings)
+        faces = [TopoDS.Face_s(f) for f in shapes(shape, TopAbs_FACE)]
+        solids = shapes(shape, TopAbs_SOLID)
+    vertices, normals, indices = triangulate(shape, faces)
     if is_iges and not solids:
         warnings.append("IGES contains surfaces rather than closed solids; solid-contact seam recognition is unavailable for these surfaces.")
     seams = recognize(shape, faces, solids, warnings)
     result = {"schemaVersion": 1, "sourceUnit": source_unit, "solidCount": len(solids), "faceCount": len(faces), "vertices": vertices, "normals": normals, "indices": indices, "seams": seams, "warnings": warnings}
+    if healing is not None:
+        result["healing"] = healing
     progress(f"Imported {len(indices) // 3:,} triangles and {len(seams)} seam candidates")
     destination.write_text(json.dumps(result, separators=(",", ":"), allow_nan=False), encoding="utf-8")
 
