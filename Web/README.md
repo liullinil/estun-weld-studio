@@ -1,10 +1,10 @@
-# ESTUN Weld Studio · Browser edition
+# ENCY HYPER - ESTUN
 
 Published at **https://178.105.241.117/hyper/**. The existing SwissCAM at the origin root is independent and remains unchanged.
 
 Source baseline: `liullinil/estun-weld-studio`, `main`, `e783203fb4ec32d592d9d4922d891032fe162100` (latest GitHub main on 2026-09-16).
 
-The browser uses Three.js/WebGL 2, original ENCY S20-180 Pro CAD, native joint frames and limits, the mounted MIG/MAG torch and the original studio HDR. A lossless indexed mesh retains all **514,833 triangles**, every source position and normal; rendering vertices fall from 1,544,499 to 326,788. No geometry is decimated. The UI follows the desktop workpiece panel and physical teach pendant.
+The browser uses Three.js/WebGL 2, original ENCY S20-180 Pro CAD, native joint frames and limits, the mounted MIG/MAG torch and the original studio HDR. A lossless indexed mesh retains all **514,833 triangles**, every source position and normal; rendering vertices fall from 1,544,499 to 326,788. No geometry is decimated. The workspace header contains only the ENCY HYPER - ESTUN brand. TCP, Trace and all display controls are SwissCAM-style circular icons on the left of the viewport; exposure and resolution open compact controls beside their icons. Only the seam list scrolls. The pendant and preparation panel fit the available height, and the selected seam uses a bright cyan five-pixel line with a wider halo, whether selected in the list or in the viewport.
 
 ## Workflow
 
@@ -12,7 +12,7 @@ The sample loads automatically. Import STEP/STP, position the workpiece with Mov
 
 Pendant controls support JOINT/WORLD/TOOL jog, home, taught points, speed override, stop and latched emergency stop. Display preferences and explicitly saved taught points are stored in browser local storage. Space stops motion, Escape latches E-stop, focus loss stops motion. Workpiece changes invalidate planning. Manual motion changes require replanning.
 
-Rendering includes ACES, original HDR reflections, two shadow-casting studio lights, ambient occlusion, bloom, arc light, sparks, smoke and cooling weld beads. Display settings adjust resolution, exposure and effects. The view cube is ported from SwissCAM: transparent 104-pixel control, orientation synchronized with the camera, all six faces, twelve edges and eight corners, hover highlighting, and drag-to-orbit. Focus it for F/B/T/D/L/R face shortcuts, arrow-key rotation and Home/Enter isometric. Space and Escape retain the robot's stop controls. Hideable panels, cinema, image capture and fullscreen are available.
+Rendering includes ACES, original HDR reflections, two shadow-casting studio lights, ambient occlusion, bloom, arc light, sparks, smoke and cooling weld beads. Display icons adjust resolution, exposure and effects. The view cube is ported from SwissCAM: transparent 104-pixel control, orientation synchronized with the camera, all six faces, twelve edges and eight corners, hover highlighting, and drag-to-orbit. Focus it for F/B/T/D/L/R face shortcuts, arrow-key rotation and Home/Enter isometric. Space and Escape retain the robot's stop controls. F fits the scene, P toggles the pendant and Tab toggles cinema; the former top and bottom button bars have been removed.
 
 The browser rendering engine differs from Godot Forward+, so the lighting and postprocessing are not pixel-identical. Web import is limited to **64 MB**, and tessellated output to 60 MB. CAD import and planning require the server. The native planner accepts one active job at a time and has a 10-minute timeout. Uploaded STEP files and intermediate geometry are temporary and removed after import.
 
@@ -45,6 +45,7 @@ Open `http://127.0.0.1:18740/hyper/`. For development use `npm run dev` with the
 - `/srv/hyper/releases/20260916` — packaged native core, frontend and Docker build.
 - Docker image `estun-hyper:20260916-final2`; container `hyper-app-v2`.
 - View-cube frontend update: `/srv/hyper/releases/20260916-view-cube`, reproducible image `estun-hyper:20260916-view-cube`. The running container received hashed assets followed by an atomic HTML replacement, preserving active planner jobs; use this newer image when recreating it.
+- Latest workspace update: `/srv/hyper/releases/20260916-workspace`, image `estun-hyper:20260916-workspace`; use this image to recreate the current frontend. The existing `hyper-app-v2` container receives the same assets without restarting the native planner.
 - Internal port 18740, Docker network `swisscam-studio_default`; no additional public port.
 - Caddy `handle_path /hyper/*` forwards to `hyper-app-v2:18740`. Existing fallback still forwards to `web:80`.
 - Native Godot bridge stays on container loopback 18741. Node gateway handles uploads, API proxy and static assets.
