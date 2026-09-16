@@ -34,9 +34,13 @@ public partial class CadImportChecks : Node
             Require(seam.Points.Length > 2 && seam.NormalsA.Length == seam.Points.Length && seam.NormalsB.Length == seam.Points.Length, "Seams carry tracking polylines and sampled adjacent normals");
             seam.Deleted = true;
             Require(!seam.MatchesAngleRange(85, 95) && !seam.Enabled, "Deleted seam stays excluded from planning");
+            CadDocument cached = await service.ImportAsync(path, null, timeout.Token);
+            Require(cached.Seams.All(s => !s.Deleted), "Cached source geometry creates a fresh independent work order");
+            string uncachedPath = Path.Combine(directory, "cancellation.step");
+            await File.WriteAllTextAsync(uncachedPath, await File.ReadAllTextAsync(path) + "\n");
             using var cancelled = new CancellationTokenSource(TimeSpan.FromMilliseconds(30));
             bool cancellationObserved = false;
-            try { await service.ImportAsync(path, null, cancelled.Token); }
+            try { await service.ImportAsync(uncachedPath, null, cancelled.Token); }
             catch (OperationCanceledException) { cancellationObserved = true; }
             Require(cancellationObserved, "Cancelled import terminates the worker and does not replace CAD");
             string bad = Path.Combine(directory, "malformed.step");

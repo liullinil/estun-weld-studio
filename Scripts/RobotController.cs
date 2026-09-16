@@ -42,7 +42,7 @@ public partial class RobotController : Node
     private float[]? _segmentTarget;
     private float _segmentProgress;
     private float _segmentDuration;
-    private string _status = "Drives off · simulation ready";
+    private string _status = "Ready · MANUAL";
 
     public event Action? PoseChanged;
     public event Action? StatusChanged;
@@ -51,9 +51,11 @@ public partial class RobotController : Node
     public float[] AnglesDegrees => (float[])_angles.Clone();
     public Transform3D TcpTransform => _initialized ? RobotKinematics.Forward(_angles, _rest, _toolRest) : Transform3D.Identity;
     public Vector3 TcpPosition => TcpTransform.Origin;
-    public Vector3 TcpRotationDegrees => TcpTransform.Basis.GetEuler() * (180f / Mathf.Pi);
+    public Basis DisplayToolBasis => TcpTransform.Basis * new Basis(Vector3.Right,Mathf.Pi*.5f);
+    public Vector3 TcpRotationDegrees => DisplayToolBasis.GetEuler() * (180f / Mathf.Pi);
     public bool DrivesEnabled { get; private set; }
     public bool EmergencyStopped { get; private set; }
+    public bool AutomaticMode { get; private set; }
     public string Status => _status;
     public bool IsPlaying => _playIndex >= 0;
     public bool MotionActive => _jogDirection != 0 || _goingHome || IsPlaying || _externalMotion;
@@ -89,6 +91,7 @@ public partial class RobotController : Node
         _rest = joints.Select(j => j.Transform).ToArray();
         _toolRest = tip.Transform;
         _initialized = true;
+        DrivesEnabled = true;
         ApplyPose();
         SetPhysicsProcess(true);
     }
@@ -119,14 +122,23 @@ public partial class RobotController : Node
     public void ResetEmergencyStop()
     {
         EmergencyStopped = false;
-        DrivesEnabled = false;
+        DrivesEnabled = true;
         ClearMotion();
-        SetStatus("Emergency stop reset · drives off");
+        SetStatus("STOP released · MANUAL");
         StatusChanged?.Invoke();
     }
 
     public bool SetJointJog(int axis, int direction) => BeginJog(axis, direction, false, false);
     public bool SetTcpJog(int axis, int direction, bool toolFrame) => BeginJog(axis, direction, true, toolFrame);
+
+    public void SetAutomaticMode(bool automatic)
+    {
+        if (AutomaticMode == automatic) return;
+        ClearMotion();
+        AutomaticMode = automatic;
+        SetStatus(automatic ? "AUTO · program playback" : "Ready · MANUAL");
+        StatusChanged?.Invoke();
+    }
 
     private bool BeginJog(int axis, int direction, bool cartesian, bool toolFrame)
     {
@@ -300,14 +312,15 @@ public partial class RobotController : Node
         if (_jogAxis < 3)
         {
             deltaPosition = .25f * SpeedOverride * dt;
-            Vector3 direction = _toolFrame ? current.Basis * axis : axis;
+            Vector3 direction = _toolFrame ? current.Basis * new Basis(Vector3.Right,Mathf.Pi*.5f) * axis : axis;
             target.Origin += direction * deltaPosition * _jogDirection;
         }
         else
         {
             deltaAngle = Mathf.DegToRad(60f) * SpeedOverride * dt;
-            Basis turn = new(axis, deltaAngle * _jogDirection);
-            target.Basis = (_toolFrame ? current.Basis * turn : turn * current.Basis).Orthonormalized();
+            Vector3 rotationAxis = _toolFrame ? current.Basis * new Basis(Vector3.Right,Mathf.Pi*.5f) * axis : axis;
+            Basis turn = new(rotationAxis.Normalized(), deltaAngle * _jogDirection);
+            target.Basis = (turn * current.Basis).Orthonormalized();
         }
         var solution = RobotKinematics.Solve(target, _angles, _rest, _toolRest,
             Math.Max(.000015f, deltaPosition * .12f), Math.Max(.00008f, deltaAngle * .12f));
@@ -370,6 +383,7 @@ public partial class RobotController : Node
     private bool RequireMotionPermission()
     {
         if (!_initialized) { SetStatus("Robot is initializing"); return false; }
+        if (AutomaticMode) { SetStatus("Manual motion is locked in AUTO"); return false; }
         if (EmergencyStopped) { SetStatus("Emergency stop is latched"); return false; }
         if (!DrivesEnabled) { SetStatus("Enable drives before moving"); return false; }
         return true;

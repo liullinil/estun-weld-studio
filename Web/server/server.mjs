@@ -20,11 +20,11 @@ function cacheDocument(key,document,bytes){if(bytes>32*1024*1024)return;while(im
 function importProgress(message){return message.startsWith('Reading')?.08:message.startsWith('Tessellating')?.25:message.startsWith('Recognizing')?.55:message.startsWith('Checking')?.72:message.startsWith('Imported')?.95:.05;}
 async function runImport(job,file){let temp;const started=performance.now();
  try{const key=createHash('sha256').update(file.buffer).digest('hex'),cached=importCache.get(key);let document;
-  if(cached){document=cached.document;job.message='Reusing unchanged STEP geometry';}else{temp=await mkdtemp(path.join(tmpdir(),'ency-cad-'));const input=path.join(temp,'part.step'),output=path.join(temp,'part.json');await writeFile(input,file.buffer);file.buffer=null;
+  if(cached){document=cached.document;job.message='Reusing unchanged CAD geometry';}else{temp=await mkdtemp(path.join(tmpdir(),'ency-cad-'));const input=path.join(temp,'part'+path.extname(file.originalname).toLowerCase()),output=path.join(temp,'part.json');await writeFile(input,file.buffer);file.buffer=null;
    await cad.import(input,output,message=>{job.message=message;job.progress=importProgress(message);},job.cancel.signal);
    const info=await stat(output);if(info.size>60*1024*1024)throw Error('Tessellated part exceeds the 60 MB browser limit');document=JSON.parse(await readFile(output,'utf8'));cacheDocument(key,document,info.size);
   }
-  if(job.cancel.signal.aborted)throw Error('Import cancelled');job.result={name:path.basename(file.originalname).replace(/\.(stp|step)$/i,''),document,timing:{seconds:(performance.now()-started)/1000,cached:!!cached}};job.status='complete';job.progress=1;job.message='STEP imported';
+  if(job.cancel.signal.aborted)throw Error('Import cancelled');job.result={name:path.basename(file.originalname).replace(/\.(stp|step|igs|iges)$/i,''),document,timing:{seconds:(performance.now()-started)/1000,cached:!!cached}};job.status='complete';job.progress=1;job.message='CAD imported';
  }catch(error){job.status=job.cancel.signal.aborted?'cancelled':'failed';job.error=error.message;job.message=error.message;}finally{file.buffer=null;try{if(temp)await rm(temp,{recursive:true,force:true,maxRetries:3,retryDelay:150});}catch(error){console.error('CAD temporary cleanup:',error.message);}finally{importing=false;}}
 }
 
@@ -33,10 +33,10 @@ app.use((req,res,next)=>{res.setHeader('X-Content-Type-Options','nosniff');res.s
 router.get('/health',async(req,res)=>{let p;try{p=await fetch(`${planner}/health`,{signal:AbortSignal.timeout(3000)}).then(r=>r.json());}catch{p={ok:false};}res.json({ok:true,service:'ENCY HYPER - ESTUN',planner:p});});
 router.post('/import',(req,res,next)=>{
  if(importing||activePlan)return res.status(429).json({error:'The CAD worker is busy. Wait for the current operation.'});importing=true;
- upload.single('file')(req,res,error=>{if(error){importing=false;return next(error);}if(!req.file||!/\.(step|stp)$/i.test(req.file.originalname)){importing=false;return res.status(400).json({error:'Choose a STEP file (.step or .stp)'});}next();});
+ upload.single('file')(req,res,error=>{if(error){importing=false;return next(error);}if(!req.file||!/\.(step|stp|iges|igs)$/i.test(req.file.originalname)){importing=false;return res.status(400).json({error:'Choose a STEP or IGES file (.step, .stp, .iges, .igs)'});}next();});
 },(req,res)=>{
  for(const [id,job] of importJobs)if(job.status!=='running'&&(Date.now()-job.created>600000||importJobs.size>=2))importJobs.delete(id);
- const job={id:randomUUID(),created:Date.now(),status:'running',progress:0,message:'Reading STEP…',result:null,error:'',cancel:new AbortController()};importJobs.set(job.id,job);void runImport(job,req.file);res.status(202).json({jobId:job.id,status:job.status});
+ const job={id:randomUUID(),created:Date.now(),status:'running',progress:0,message:'Reading CAD…',result:null,error:'',cancel:new AbortController()};importJobs.set(job.id,job);void runImport(job,req.file);res.status(202).json({jobId:job.id,status:job.status});
 });
 router.route('/imports/:id').get((req,res)=>{const job=importJobs.get(req.params.id);if(!job)return res.status(404).json({error:'Unknown import job'});res.setHeader('Cache-Control','no-store');res.json({jobId:job.id,status:job.status,progress:job.progress,message:job.message,result:job.result,error:job.error});}).delete((req,res)=>{const job=importJobs.get(req.params.id);if(!job)return res.status(404).json({error:'Unknown import job'});if(job.status==='running')job.cancel.abort();res.json({status:'cancellation requested'});});
 router.use('/planner',express.json({limit:'64mb'}));

@@ -1,185 +1,60 @@
-using Godot;
+﻿using Godot;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace EstunStudio;
 
-/// <summary>Camera-oriented CAD view cube. Its 3 × 3 face regions cover all 26 standard views.</summary>
+/// <summary>The same orthographic view cube and 4/7-pixel edge/corner targets as SwissCAM.</summary>
 public partial class ViewCube : Control
 {
     public event Action<Vector3>? ViewRequested;
+    public event Action<Vector3>? PresetRequested;
     public event Action? HomeRequested;
     public event Action<Vector2>? OrbitRequested;
-    public static Vector3 DefaultDirection => new Vector3(.68f, .48f, .76f).Normalized();
-
-    private record Face(string Name, Vector3 Normal, Vector3 U, Vector3 V);
-    private record Region(Vector2[] Polygon, Vector3 Direction, string Caption);
-    private static readonly Face[] Faces =
+    public static Vector3 DefaultDirection=>new Vector3(-1,1,1).Normalized();
+    private record Face(string Label,Vector3 Normal,int[] Vertices);
+    private record Hit(string Key,Vector3 Direction,Vector2[] Polygon,Vector2 Center,float Facing,bool Face);
+    private static readonly Vector3[] Vertices={new(-1,-1,-1),new(1,-1,-1),new(1,1,-1),new(-1,1,-1),new(-1,-1,1),new(1,-1,1),new(1,1,1),new(-1,1,1)};
+    private static readonly Face[] Faces={new("Front",Vector3.Back,new[]{4,5,6,7}),new("Back",Vector3.Forward,new[]{1,0,3,2}),new("Top",Vector3.Up,new[]{7,6,2,3}),new("Bottom",Vector3.Down,new[]{0,1,5,4}),new("Left",Vector3.Left,new[]{0,4,7,3}),new("Right",Vector3.Right,new[]{5,1,2,6})};
+    private Basis _view=Basis.Identity;
+    private readonly List<Hit> _faces=new(),_corners=new(),_edges=new();
+    private Font _font=null!;private Hit? _hover;private Vector2 _press,_last;private bool _pressed,_dragged,_built;
+    public void Build(){if(_built)return;_built=true;Name="ViewCube";Size=CustomMinimumSize=new Vector2(104,104);MouseFilter=MouseFilterEnum.Stop;FocusMode=FocusModeEnum.All;MouseDefaultCursorShape=CursorShape.PointingHand;_font=GD.Load<Font>("res://Assets/Fonts/Inter-Regular.ttf");TooltipText="Click a face, edge or corner. Drag to rotate. Home restores isometric.";MouseExited+=()=>{_hover=null;QueueRedraw();};Refresh();}
+    public void SetCameraBasis(Basis basis){var next=basis.Orthonormalized().Inverse();if(_view.IsEqualApprox(next))return;_view=next;Refresh();}
+    private void Refresh()
     {
-        new("FRONT", Vector3.Back, Vector3.Right, Vector3.Up),
-        new("BACK", Vector3.Forward, Vector3.Left, Vector3.Up),
-        new("RIGHT", Vector3.Right, Vector3.Forward, Vector3.Up),
-        new("LEFT", Vector3.Left, Vector3.Back, Vector3.Up),
-        new("TOP", Vector3.Up, Vector3.Right, Vector3.Forward),
-        new("BOTTOM", Vector3.Down, Vector3.Right, Vector3.Back)
-    };
-    private readonly List<Region> _regions = new();
-    private Basis _view = Basis.Identity;
-    private Font _font = null!;
-    private Vector2 _pointer = new(-100, -100), _pressPosition;
-    private bool _pressed, _dragged, _built;
-    private readonly Rect2 _home = new(116, 4, 24, 24);
-    private static readonly Vector2 Center = new(73, 79);
-    private const float ScaleFactor = 30;
-    private static readonly Color Amber = new("f4b658");
-
-    public void Build()
-    {
-        if (_built) return;
-        _built = true;
-        Name = "ViewCube";
-        Size = CustomMinimumSize = new Vector2(146, 158);
-        MouseFilter = MouseFilterEnum.Stop;
-        MouseDefaultCursorShape = CursorShape.PointingHand;
-        _font = GD.Load<Font>("res://Assets/Fonts/Inter-SemiBold.ttf") ?? ThemeDB.FallbackFont;
-        TooltipText = "Click a face, edge or corner to orient the view. Drag to orbit. Home resets the camera.";
-        MouseExited += () => { _pointer = new Vector2(-100, -100); QueueRedraw(); };
-        QueueRedraw();
+        _faces.Clear();_corners.Clear();_edges.Clear();var points=Vertices.Select(v=>{var p=_view*v;return new Vector2(52+p.X*22.36f,52-p.Y*22.36f);}).ToArray();
+        var seenCorners=new HashSet<int>();var seenEdges=new HashSet<string>();
+        foreach(var face in Faces){float facing=(_view*face.Normal).Z;if(facing<=.012f)continue;var polygon=face.Vertices.Select(i=>points[i]).ToArray();Vector2 center=polygon.Aggregate(Vector2.Zero,(a,b)=>a+b)*.25f;_faces.Add(new(face.Label,face.Normal,polygon,center,facing,true));
+            for(int i=0;i<4;i++){int a=face.Vertices[i],b=face.Vertices[(i+1)%4];if(seenCorners.Add(a))_corners.Add(new("corner"+a,Vertices[a],new[]{points[a]},points[a],0,false));string key=$"{Math.Min(a,b)}:{Math.Max(a,b)}";if(seenEdges.Add(key))_edges.Add(new(key,(Vertices[a]+Vertices[b])*.5f,new[]{points[a],points[b]},(points[a]+points[b])*.5f,0,false));}}
+        _hover=null;QueueRedraw();
     }
-
-    public void SetCameraBasis(Basis cameraBasis)
+    private Hit? Pick(Vector2 point)
     {
-        var next = cameraBasis.Orthonormalized().Inverse();
-        if (_view.IsEqualApprox(next)) return;
-        _view = next;
-        QueueRedraw();
+        Hit? result=null;float distance=7;
+        foreach(var hit in _corners){float d=point.DistanceTo(hit.Center);if(d<distance){distance=d;result=hit;}}if(result!=null)return result;
+        distance=4;foreach(var hit in _edges){Vector2 a=hit.Polygon[0],b=hit.Polygon[1],ab=b-a;float t=Mathf.Clamp((point-a).Dot(ab)/Mathf.Max(ab.LengthSquared(),1e-10f),0,1),d=point.DistanceTo(a+ab*t);if(d<distance){distance=d;result=hit;}}if(result!=null)return result;
+        return _faces.FirstOrDefault(hit=>Geometry2D.IsPointInPolygon(point,hit.Polygon));
     }
-
-    private Vector2 Project(Vector3 position)
-    {
-        var p = _view * position;
-        float perspective = 5f / (5f - p.Z);
-        return Center + new Vector2(p.X, -p.Y) * ScaleFactor * perspective;
-    }
-
-    private Vector2[] Quad(Face face, float x0, float y0, float x1, float y1) =>
-        new[] { Project(face.Normal + face.U*x0 + face.V*y0), Project(face.Normal + face.U*x1 + face.V*y0),
-            Project(face.Normal + face.U*x1 + face.V*y1), Project(face.Normal + face.U*x0 + face.V*y1) };
-
-    private void Outline(Vector2[] polygon, Color color, float width = 1)
-    {
-        var loop = new Vector2[polygon.Length + 1];
-        polygon.CopyTo(loop, 0); loop[^1] = polygon[0];
-        DrawPolyline(loop, color, width, true);
-    }
-
     public override void _Draw()
     {
-        if (!_built) return;
-        _regions.Clear();
-        var panel = new StyleBoxFlat { BgColor = new Color(.045f,.067f,.084f,.83f), BorderColor = new Color(.44f,.52f,.58f,.22f),
-            BorderWidthBottom = 1, BorderWidthLeft = 1, BorderWidthRight = 1, BorderWidthTop = 1,
-            CornerRadiusTopLeft = 12, CornerRadiusTopRight = 12, CornerRadiusBottomLeft = 12, CornerRadiusBottomRight = 12,
-            ShadowColor = new Color(0,0,0,.17f), ShadowSize = 9 };
-        DrawStyleBox(panel, new Rect2(Vector2.Zero, Size));
-        DrawString(_font,new Vector2(13,20),"VIEW",HorizontalAlignment.Left,-1,11,new Color("98a8b3"));
-        DrawArc(Center + new Vector2(0,8), 57, 0, Mathf.Tau, 72, new Color(.43f,.52f,.58f,.14f), 1, true);
-
-        bool homeHover = _home.HasPoint(_pointer);
-        var homeColor = homeHover ? Amber : new Color("9cabb5");
-        if(homeHover) DrawStyleBox(new StyleBoxFlat { BgColor = new Color(.65f,.43f,.12f,.17f), CornerRadiusTopLeft=5,CornerRadiusTopRight=5,CornerRadiusBottomLeft=5,CornerRadiusBottomRight=5 },_home);
-        DrawPolyline(new[] { new Vector2(121,16),new Vector2(128,10),new Vector2(135,16) },homeColor,1.4f,true);
-        DrawPolyline(new[] { new Vector2(123,15),new Vector2(123,22),new Vector2(133,22),new Vector2(133,15) },homeColor,1.4f,true);
-
-        var visible = new List<Face>();
-        // The virtual eye is five cube units away; perspective-facing is n·(eye-face) > 0.
-        foreach(var face in Faces) if((_view * face.Normal).Z > .2001f) visible.Add(face);
-        visible.Sort((a,b) => (_view*a.Normal).Z.CompareTo((_view*b.Normal).Z));
-        string caption = "FACE · EDGE · CORNER";
-        foreach(var face in visible)
-        {
-            float facing = (_view * face.Normal).Z;
-            var polygon = Quad(face,-1,-1,1,1);
-            var shade = new Color("35434e").Lerp(new Color("71818b"),facing*.62f);
-            DrawColoredPolygon(polygon,shade);
-            for(int row=0;row<3;row++) for(int col=0;col<3;col++)
-            {
-                // Wide face centre and narrow edge strips match familiar CAD view cubes.
-                float[] split = { -1,-.54f,.54f,1 };
-                var regionPolygon = Quad(face,split[col],split[row],split[col+1],split[row+1]);
-                Vector3 direction = (face.Normal + face.U*(col-1) + face.V*(row-1)).Normalized();
-                string regionName = col==1 && row==1 ? face.Name : DirectionName(direction);
-                _regions.Add(new Region(regionPolygon,direction,regionName));
-                if(!_pressed && Geometry2D.IsPointInPolygon(_pointer,regionPolygon))
-                {
-                    DrawColoredPolygon(regionPolygon,new Color(Amber.R,Amber.G,Amber.B,.64f));
-                    Outline(regionPolygon,new Color(Amber.R,Amber.G,Amber.B,.9f),1.25f);
-                    caption=regionName;
-                }
-            }
-            Outline(polygon,new Color("a0adb5"),1.3f);
-            var labelCenter=Project(face.Normal*1.001f);
-            var labelColor=new Color("f1f3f2");
-            float labelWidth=_font.GetStringSize(face.Name,HorizontalAlignment.Left,-1,11).X;
-            if(facing>.20f)
-            {
-                // Apply the projected face plane to the lettering so it rotates with the cube.
-                Vector2 x=(Project(face.Normal + face.U*.3f)-labelCenter)/(.3f*ScaleFactor);
-                Vector2 y=(Project(face.Normal - face.V*.3f)-labelCenter)/(.3f*ScaleFactor);
-                DrawSetTransformMatrix(new Transform2D(x,y,labelCenter));
-                DrawString(_font,new Vector2(-labelWidth*.5f,3),face.Name,HorizontalAlignment.Left,-1,11,labelColor);
-                DrawSetTransformMatrix(Transform2D.Identity);
-            }
-        }
-        if(homeHover) caption="HOME VIEW";
-        DrawString(_font,new Vector2(0,145),caption,HorizontalAlignment.Center,146,8,new Color("9aaebc"));
-
-        // The triad makes the scene's Y-up convention visible without occupying the viewport.
-        var origin=new Vector2(21,120);
-        foreach(var item in new[] { (Vector3.Right,"X",new Color("ed8778")),(Vector3.Up,"Y",new Color("93cead")),(Vector3.Back,"Z",new Color("81b3e6")) })
-        {
-            Vector3 p=_view*item.Item1;
-            var end=origin+new Vector2(p.X,-p.Y)*12;
-            DrawLine(origin,end,item.Item3,1.4f,true);
-            if(Mathf.Abs(p.Z)<.95f) DrawString(_font,end+new Vector2(-2,-3),item.Item2,HorizontalAlignment.Left,-1,7,item.Item3);
-        }
-        DrawCircle(origin,2,new Color("bdc7cd"));
+        if(!_built)return;
+        foreach(var face in _faces){bool active=_hover?.Key==face.Key;Color fill=active?new Color("468d88"):new Color("3b5269").Lerp(new Color("72899e"),face.Facing*.65f);DrawColoredPolygon(face.Polygon,fill);DrawPolyline(face.Polygon.Append(face.Polygon[0]).ToArray(),new Color("8ba2b7"),1.2f,true);if(face.Facing<.23f)continue;var intersections=new List<float>();for(int i=0;i<4;i++){Vector2 a=face.Polygon[i],b=face.Polygon[(i+1)%4];if(Mathf.Abs(a.Y-b.Y)>.001f&&face.Center.Y>=Mathf.Min(a.Y,b.Y)&&face.Center.Y<=Mathf.Max(a.Y,b.Y))intersections.Add(a.X+(b.X-a.X)*(face.Center.Y-a.Y)/(b.Y-a.Y));}if(intersections.Count<2)continue;float width=intersections.Max()-intersections.Min()-4;int size=face.Facing>.8f?10:9;while(size>=7&&_font.GetStringSize(face.Key,HorizontalAlignment.Left,-1,size).X>width)size--;if(size>=7)DrawString(_font,face.Center+new Vector2(-width*.5f,size*.35f),face.Key,HorizontalAlignment.Center,width,size,new Color("f5f9fc"));}
+        if(_hover is {Face:false} h){if(h.Polygon.Length==1){DrawCircle(h.Center,5,new Color("5ee0c0"));DrawArc(h.Center,5,0,Mathf.Tau,24,new Color("d2fff4"),1,true);}else DrawLine(h.Polygon[0],h.Polygon[1],new Color("5ee0c0"),4,true);}
     }
-
-    private static string DirectionName(Vector3 d)
+    public override void _GuiInput(InputEvent input)
     {
-        var words=new List<string>();
-        if(d.Y>.1f) words.Add("TOP"); else if(d.Y<-.1f) words.Add("BOTTOM");
-        if(d.Z>.1f) words.Add("FRONT"); else if(d.Z<-.1f) words.Add("BACK");
-        if(d.X>.1f) words.Add("RIGHT"); else if(d.X<-.1f) words.Add("LEFT");
-        return string.Join(" · ",words);
+        if(input is InputEventMouseButton {ButtonIndex:MouseButton.Left} button){if(button.Pressed){if(Pick(button.Position)==null)return;_pressed=true;_dragged=false;_press=_last=button.Position;GrabFocus();}else End(button.Position);AcceptEvent();}
+        else if(input is InputEventMouseMotion motion&&!_pressed){_hover=Pick(motion.Position);QueueRedraw();AcceptEvent();}
+        else if(input is InputEventKey {Pressed:true,Echo:false} key){Vector3? direction=key.Keycode switch{Key.F=>Vector3.Back,Key.B=>Vector3.Forward,Key.T=>Vector3.Up,Key.D=>Vector3.Down,Key.L=>Vector3.Left,Key.R=>Vector3.Right,_=>null};if(direction.HasValue)PresetRequested?.Invoke(direction.Value);else if(key.Keycode is Key.Home or Key.Enter)HomeRequested?.Invoke();else return;AcceptEvent();}
     }
-
-    public override void _GuiInput(InputEvent e)
+    public override void _Input(InputEvent input)
     {
-        if(e is InputEventMouseMotion motion)
-        {
-            _pointer=motion.Position;
-            if(_pressed && (_dragged || motion.Position.DistanceTo(_pressPosition)>4))
-            { _dragged=true; OrbitRequested?.Invoke(motion.Relative); }
-            QueueRedraw(); AcceptEvent();
-        }
-        else if(e is InputEventMouseButton button && button.ButtonIndex==MouseButton.Left)
-        {
-            _pointer=button.Position;
-            if(button.Pressed) { _pressed=true;_dragged=false;_pressPosition=button.Position; }
-            else
-            {
-                if(_pressed && !_dragged)
-                {
-                    if(_home.HasPoint(button.Position)) HomeRequested?.Invoke();
-                    else for(int i=_regions.Count-1;i>=0;i--)
-                        if(Geometry2D.IsPointInPolygon(button.Position,_regions[i].Polygon))
-                        { ViewRequested?.Invoke(_regions[i].Direction);break; }
-                }
-                _pressed=false;
-            }
-            QueueRedraw(); AcceptEvent();
-        }
+        if(!_pressed)return;
+        if(input is InputEventMouseMotion){var point=GetLocalMousePosition();_dragged|=point.DistanceTo(_press)>4;if(_dragged){OrbitRequested?.Invoke((point-_last)*2.333333f);_hover=null;}_last=point;QueueRedraw();GetViewport().SetInputAsHandled();}
+        else if(input is InputEventMouseButton {ButtonIndex:MouseButton.Left,Pressed:false}){End(GetLocalMousePosition());GetViewport().SetInputAsHandled();}
     }
+    public override void _Notification(int what){if(what==NotificationApplicationFocusOut)_pressed=false;}
+    private void End(Vector2 point){if(_pressed&&!_dragged&&Pick(point) is {} hit){if(hit.Face)PresetRequested?.Invoke(hit.Direction.Normalized());else ViewRequested?.Invoke(hit.Direction.Normalized());}_pressed=false;_hover=null;QueueRedraw();}
 }

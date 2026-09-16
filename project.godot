@@ -2,7 +2,7 @@
 config_version=5
 
 [application]
-config/name="ESTUN Studio"
+config/name="ENCY HYPER - ESTUN"
 run/main_scene="res://Scenes/Main.tscn"
 config/features=PackedStringArray("4.5", "C#", "Forward Plus")
 config/icon="res://Assets/icon.svg"
@@ -26,12 +26,14 @@ renderer/rendering_method="forward_plus"
 renderer/rendering_method.mobile="forward_plus"
 rendering_device/driver.windows="vulkan"
 textures/default_filters/use_nearest_mipmap_filter=false
-anti_aliasing/quality/msaa_3d=1
+anti_aliasing/quality/msaa_3d=3
 anti_aliasing/quality/use_taa=false
-lights_and_shadows/directional_shadow/size=4096
-lights_and_shadows/positional_shadow/atlas_size=4096
-environment/ssao/quality=3
-environment/ssil/quality=3
+lights_and_shadows/directional_shadow/size=8192
+lights_and_shadows/directional_shadow/soft_shadow_filter_quality=5
+lights_and_shadows/positional_shadow/atlas_size=8192
+lights_and_shadows/positional_shadow/soft_shadow_filter_quality=5
+environment/ssao/quality=4
+environment/ssil/quality=4
 environment/ssao/half_size=false
 environment/ssil/half_size=false
 environment/screen_space_reflection/roughness_quality=3

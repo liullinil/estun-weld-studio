@@ -1,6 +1,6 @@
-# ESTUN Weld Studio
+# ENCY HYPER - ESTUN
 
-Browser edition: **https://178.105.241.117/hyper/** — original robot CAD, browser teach pendant, STEP import and the same native collision planner. Source, development and deployment notes are in [Web/README.md](Web/README.md).
+Browser edition: **https://178.105.241.117/hyper/**. Portable Windows desktop: **[Download ZIP](https://178.105.241.117/hyper/downloads/ENCY-HYPER-ESTUN-Windows-x64.zip)**. Both versions now share explicit seam assignment, progressive connected propagation, STEP/IGES import, weaving, warning/partial path simulation and Lua export. Native graphics default to Ultra. Current workflow, verification and deployment notes are in [Web/README.md](Web/README.md); the original engine architecture and source-model documentation are retained below for reference.
 
 A Windows robotic welding workspace built with **C# and Godot 4.5.1 .NET**. Import STEP assemblies, review angle-based seam candidates, position CAD with an interactive gizmo, generate checked robot trajectories, and simulate a mounted welding torch, arc, sparks, smoke and cooling weld beads.
 

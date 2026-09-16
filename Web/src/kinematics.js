@@ -11,6 +11,9 @@ export const REST = [
   [1,0,0,0, 0,0,1,.1625, 0,-1,0,.1625, 0,0,0,1]
 ].map(a=>new Matrix4().set(...a));
 export const TOOL = new Matrix4().makeRotationZ(Math.PI/6).setPosition(.1,-.2532,0);
+// Display/tool-jog convention: +Z follows the wire outward; the planner's
+// historical +Y approach axis is retained internally for geometry compatibility.
+export const TOOL_DISPLAY = new Matrix4().makeRotationX(Math.PI/2);
 export function jointMatrix(i,a){return REST[i].clone().multiply(new Matrix4().makeRotationY(-MathUtils.degToRad(a)));}
 export function forward(angles){let m=new Matrix4(); for(let i=0;i<6;i++) m.multiply(jointMatrix(i,angles[i])); return m.multiply(TOOL);}
 export function pose(m){return {position:new Vector3().setFromMatrixPosition(m),quaternion:new Quaternion().setFromRotationMatrix(m)};}

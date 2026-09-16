@@ -1,6 +1,6 @@
-"""Bounded STEP -> JSON geometry worker. OpenCascade handles BRep; the desktop app is C#.
+"""Bounded STEP/IGES -> JSON geometry worker. OpenCascade handles BRep; desktop is C#.
 
-STEP input is parsed as data, never executed. Geometry is transferred to millimetres
+CAD input is parsed as data, never executed. Geometry is transferred to millimetres
 then converted to metres and Godot Y-up (X,Y,Z -> X,Z,-Y). Face adjacency comes
 from the BRep, never guessed from tessellation triangles.
 """
@@ -28,6 +28,7 @@ from OCP.GeomAbs import GeomAbs_Plane
 from OCP.IFSelect import IFSelect_RetDone
 from OCP.Interface import Interface_Static
 from OCP.STEPControl import STEPControl_Reader, STEPControl_Writer, STEPControl_AsIs
+from OCP.IGESControl import IGESControl_Reader
 from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SOLID, TopAbs_REVERSED, TopAbs_IN
 from OCP.TopExp import TopExp, TopExp_Explorer
 from OCP.TopLoc import TopLoc_Location
@@ -351,30 +352,40 @@ def recognize(shape, faces, solids, warnings):
 
 
 def import_step(source, destination):
-    if source.suffix.lower() not in (".stp", ".step"):
-        raise ValueError("Input must be a STEP file (.step or .stp)")
+    # Keep the original entry point for desktop integrations; dispatch by CAD format.
+    if source.suffix.lower() not in (".stp", ".step", ".igs", ".iges"):
+        raise ValueError("Input must be a STEP or IGES file (.step, .stp, .iges, .igs)")
     if source.stat().st_size > 256 * 1024 * 1024:
-        raise ValueError("STEP file exceeds 256 MB import limit")
-    progress("Reading STEP product geometry…")
+        raise ValueError("CAD file exceeds 256 MB import limit")
+    is_iges = source.suffix.lower() in (".igs", ".iges")
+    format_name = "IGES" if is_iges else "STEP"
+    progress(f"Reading {format_name} product geometry…")
     Interface_Static.SetCVal_s("xstep.cascade.unit", "MM")
-    reader = STEPControl_Reader()
+    reader = IGESControl_Reader() if is_iges else STEPControl_Reader()
     if reader.ReadFile(str(source)) != IFSelect_RetDone:
-        raise ValueError("Invalid or unsupported STEP file")
-    length_units, angle_units, solid_angle_units = (TColStd_SequenceOfAsciiString() for _ in range(3))
-    reader.FileUnits(length_units, angle_units, solid_angle_units)
-    source_unit = ", ".join(length_units.Value(i).ToCString() for i in range(1, length_units.Length() + 1)) or "STEP units"
-    reader.SetSystemLengthUnit(1.0)
+        raise ValueError(f"Invalid or unsupported {format_name} file")
+    if is_iges:
+        section = reader.IGESModel().GlobalSection()
+        unit = section.UnitName()
+        source_unit = unit.ToCString() if unit is not None else "IGES units"
+    else:
+        length_units, angle_units, solid_angle_units = (TColStd_SequenceOfAsciiString() for _ in range(3))
+        reader.FileUnits(length_units, angle_units, solid_angle_units)
+        source_unit = ", ".join(length_units.Value(i).ToCString() for i in range(1, length_units.Length() + 1)) or "STEP units"
+        reader.SetSystemLengthUnit(1.0)
     if reader.TransferRoots() == 0:
-        raise ValueError("STEP contains no transferable BRep roots")
+        raise ValueError(f"{format_name} contains no transferable BRep roots")
     shape = reader.OneShape()
     if shape.IsNull():
-        raise ValueError("STEP contains no geometry")
+        raise ValueError(f"{format_name} contains no geometry")
     faces = [TopoDS.Face_s(f) for f in shapes(shape, TopAbs_FACE)]
     solids = shapes(shape, TopAbs_SOLID)
     if len(faces) > MAX_FACES:
         raise ValueError(f"Model exceeds {MAX_FACES:,} faces; import a smaller subassembly")
     vertices, normals, indices = triangulate(shape, faces)
     warnings = []
+    if is_iges and not solids:
+        warnings.append("IGES contains surfaces rather than closed solids; solid-contact seam recognition is unavailable for these surfaces.")
     seams = recognize(shape, faces, solids, warnings)
     result = {"schemaVersion": 1, "sourceUnit": source_unit, "solidCount": len(solids), "faceCount": len(faces), "vertices": vertices, "normals": normals, "indices": indices, "seams": seams, "warnings": warnings}
     progress(f"Imported {len(indices) // 3:,} triangles and {len(seams)} seam candidates")

@@ -97,7 +97,7 @@ public partial class StudioWorld : Node3D
 
     public void UpdateTcp(Transform3D transform, bool moving)
     {
-        TcpAxes.GlobalTransform=transform;
+        TcpAxes.GlobalTransform=new Transform3D(transform.Basis*new Basis(Vector3.Right,Mathf.Pi*.5f),transform.Origin);
         if(!_tracing || !moving) return;
         Vector3 p=transform.Origin;
         if(_points.Count>0 && _points[^1].DistanceTo(p)<.006f) return;
@@ -122,7 +122,7 @@ public partial class StudioWorld : Node3D
             ReflectedLightSource=Godot.Environment.ReflectionSource.Sky,
             TonemapMode=Godot.Environment.ToneMapper.Aces,TonemapExposure=.92f,
             SsaoEnabled=true,SsaoRadius=.18f,SsaoIntensity=.85f,SsaoPower=1.15f,
-            SsilEnabled=false,SsilIntensity=.22f,SsilRadius=1.5f,
+            SsilEnabled=true,SsilIntensity=.22f,SsilRadius=1.5f,
             SsrEnabled=false,SsrMaxSteps=128,SsrFadeIn=.15f,SsrFadeOut=2.0f,SsrDepthTolerance=.08f,
             GlowEnabled=true,GlowIntensity=.30f,GlowBloom=.035f,GlowHdrThreshold=1.5f,
             FogEnabled=true,FogLightColor=new Color("7d8c9b"),FogDensity=.003f,FogSkyAffect=0
@@ -139,8 +139,8 @@ public partial class StudioWorld : Node3D
     }
     public void SetUltra(bool ultra)
     {
-        Environment.SsaoEnabled=ultra; Environment.SsilEnabled=false; Environment.SsrEnabled=false;
-        GetViewport().Msaa3D=ultra?Viewport.Msaa.Msaa4X:Viewport.Msaa.Disabled;
+        Environment.SsaoEnabled=ultra; Environment.SsilEnabled=ultra; Environment.SsrEnabled=false;
+        GetViewport().Msaa3D=ultra?Viewport.Msaa.Msaa8X:Viewport.Msaa.Disabled;
         GetViewport().UseTaa=false;
     }
     private void Spot(string name,Vector3 pos,Vector3 target,Color color,float energy,float angle,float range,float size)

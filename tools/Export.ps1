@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [switch]$SkipChecks
+    [switch]$SkipChecks,
+    [string]$OutputDirectory = 'Build/ENCY-HYPER-Desktop'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -10,8 +11,8 @@ $dotnetExecutable = Join-Path $sdkDirectory 'dotnet.exe'
 $godotExecutable = Join-Path $projectRoot '.tools\godot\Godot_v4.5.1-stable_mono_win64\Godot_v4.5.1-stable_mono_win64_console.exe'
 $templateDirectory = Join-Path $projectRoot '.tools\templates\4.5.1.stable.mono'
 $releaseTemplate = Join-Path $templateDirectory 'windows_release_x86_64.exe'
-$outputDirectory = Join-Path $projectRoot 'Build'
-$outputExecutable = Join-Path $outputDirectory 'ESTUN Studio.exe'
+$outputDirectory = [System.IO.Path]::GetFullPath((Join-Path $projectRoot $OutputDirectory))
+$outputExecutable = Join-Path $outputDirectory 'ENCY HYPER - ESTUN.exe'
 
 foreach ($dependency in @($dotnetExecutable, $godotExecutable, $releaseTemplate)) {
     if (-not (Test-Path -LiteralPath $dependency -PathType Leaf)) {
@@ -36,6 +37,10 @@ try {
     $env:DOTNET_NOLOGO = '1'
 
     New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
+    foreach ($ignoredDirectory in @('artifacts', 'Build', 'Releases', '.tools')) {
+        $ignorePath = Join-Path $projectRoot ($ignoredDirectory + '/.gdignore')
+        if (Test-Path -LiteralPath (Split-Path $ignorePath)) { New-Item -ItemType File -Path $ignorePath -Force | Out-Null }
+    }
     # The Godot C# exporter requires a solution, even when dotnet build accepts
     # the project file directly. Generate it for fresh copies of this workspace.
     $solutionPath = Join-Path $projectRoot 'EstunStudio.sln'
@@ -46,11 +51,11 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Adding the project to the solution failed (exit $LASTEXITCODE)." }
     }
     Write-Host 'Building C# project...'
-    & $dotnetExecutable build (Join-Path $projectRoot 'EstunStudio.csproj') --configuration Debug
+    & $dotnetExecutable build (Join-Path $projectRoot 'EstunStudio.csproj') --configuration Debug -p:Optimize=true
     if ($LASTEXITCODE -ne 0) { throw "C# build failed (exit $LASTEXITCODE)." }
 
     Write-Host 'Importing project assets...'
-    & $godotExecutable --headless --editor --path $projectRoot --import
+    & $godotExecutable --headless --editor --path $projectRoot --import --quit
     if ($LASTEXITCODE -ne 0) { throw "Godot asset import failed (exit $LASTEXITCODE)." }
 
     if (-not $SkipChecks) {
@@ -59,7 +64,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Robot checks failed (exit $LASTEXITCODE)." }
         & $godotExecutable --headless --path $projectRoot 'res://Tests/SceneChecks.tscn'
         if ($LASTEXITCODE -ne 0) { throw "Scene integration checks failed (exit $LASTEXITCODE)." }
-        foreach($scene in @('RobotMeshChecks','PendantLayoutChecks','ViewportChecks','RenderResolutionChecks','GizmoChecks','CadImportChecks','WeldChecks','WeldingWorkflowChecks','WorkspaceLayoutChecks')) {
+        foreach($scene in @('RobotMeshChecks','DesktopShellChecks','DesktopWorkflowParityChecks','GizmoChecks','CadImportChecks','WeldChecks','WarningPlannerChecks','CollisionDetailChecks','RobotPostprocessorChecks')) {
             & $godotExecutable --headless --path $projectRoot ("res://Tests/"+$scene+'.tscn')
             if($LASTEXITCODE -ne 0){throw "$scene failed (exit $LASTEXITCODE)."}
         }
@@ -81,8 +86,8 @@ try {
         throw 'The exported application assembly is missing.'
     }
     $cadRuntime=Join-Path $projectRoot '.tools/cad-python'
-    if(!(Test-Path -LiteralPath (Join-Path $cadRuntime 'python.exe'))){throw 'STEP runtime missing: run tools/SetupCad.ps1'}
-    Write-Host 'Copying self-contained OpenCascade STEP runtime...'
+    if(!(Test-Path -LiteralPath (Join-Path $cadRuntime 'python.exe'))){throw 'CAD runtime missing: run tools/SetupCad.ps1'}
+    Write-Host 'Copying self-contained OpenCascade STEP / IGES runtime...'
     & robocopy.exe $cadRuntime (Join-Path $outputDirectory 'CadRuntime') /E /NFL /NDL /NJH /NJS /NP /XD __pycache__
     if($LASTEXITCODE -gt 7){throw 'CAD runtime copy failed'}
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'cad_import.py') -Destination (Join-Path $outputDirectory 'CadRuntime/cad_import.py') -Force

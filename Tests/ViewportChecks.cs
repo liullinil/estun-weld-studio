@@ -24,41 +24,34 @@ public partial class ViewportChecks : Node
             var cube=new ViewCube();layer.AddChild(cube);cube.Build();
             var requested=new HashSet<string>();
             Vector3 selected=Vector3.Zero;
-            cube.ViewRequested+=direction=>{selected=direction;requested.Add(Key(direction));};
+            void Requested(Vector3 direction){selected=direction;requested.Add(Key(direction));}
+            cube.ViewRequested+=Requested;cube.PresetRequested+=Requested;
             foreach(var direction in new[]{Vector3.Right,Vector3.Left,Vector3.Up,Vector3.Down,Vector3.Back,Vector3.Forward})
             {
                 cube.SetCameraBasis(Basis.LookingAt(-direction,Mathf.Abs(direction.Y)>.9f?Vector3.Back:Vector3.Up));
                 await ToSignal(GetTree(),SceneTree.SignalName.ProcessFrame);
-                await ToSignal(GetTree(),SceneTree.SignalName.ProcessFrame);
-                foreach(float x in new[]{-.77f,0,.77f}) foreach(float y in new[]{-.77f,0,.77f})
+                foreach(float x in new[]{-1f,0,1f})foreach(float y in new[]{-1f,0,1f})
                 {
-                    var point=new Vector2(73+x*37.5f,79-y*37.5f);
+                    var point=new Vector2(52+x*22.36f,52-y*22.36f);
                     cube._GuiInput(new InputEventMouseButton {Position=point,ButtonIndex=MouseButton.Left,Pressed=true});
                     cube._GuiInput(new InputEventMouseButton {Position=point,ButtonIndex=MouseButton.Left,Pressed=false});
-                    Require(selected.IsFinite() && Mathf.Abs(selected.Length()-1)<.0001f,"Cube direction is a normalized valid vector");
-                    if(x==0 && y==0) Require(selected.IsEqualApprox(direction),"Face centre requests its named orthographic direction");
+                    Require(selected.IsFinite()&&Mathf.Abs(selected.Length()-1)<.0001f,"Cube direction is normalized");
+                    if(x==0&&y==0)Require(selected.IsEqualApprox(direction),"Face center selects named orientation");
                 }
             }
-            Require(requested.Count==26,$"All 26 unique CAD view orientations can be clicked (actual {requested.Count})");
+            Require(requested.Count==26,$"All 26 SwissCAM view orientations can be clicked (actual {requested.Count})");
             int homes=0;cube.HomeRequested+=()=>homes++;
-            cube._GuiInput(new InputEventMouseButton {Position=new Vector2(128,16),ButtonIndex=MouseButton.Left,Pressed=true});
-            cube._GuiInput(new InputEventMouseButton {Position=new Vector2(128,16),ButtonIndex=MouseButton.Left,Pressed=false});
-            Require(homes==1,"Home icon resets the camera");
-            Vector2 orbit=Vector2.Zero;cube.OrbitRequested+=delta=>orbit+=delta;
-            cube._GuiInput(new InputEventMouseButton {Position=new Vector2(73,79),ButtonIndex=MouseButton.Left,Pressed=true});
-            cube._GuiInput(new InputEventMouseMotion {Position=new Vector2(85,86),Relative=new Vector2(12,7)});
-            cube._GuiInput(new InputEventMouseButton {Position=new Vector2(85,86),ButtonIndex=MouseButton.Left,Pressed=false});
-            Require(orbit==new Vector2(12,7),"Dragging the cube emits orbit motion");
+            cube._GuiInput(new InputEventKey{Keycode=Godot.Key.Home,Pressed=true});Require(homes==1,"Home resets the cube");
 
             var world=new StudioWorld();AddChild(world);world.Build();
             var camera=new Camera3D {Position=new Vector3(3,2,3)};AddChild(camera);
             CheckReflectionIsolation(world,camera);
             effects=new EffectsPanel();layer.AddChild(effects);effects.Build(world,camera);effects.ResetToCrisp();
-            Require(GetViewport().Msaa3D==Viewport.Msaa.Msaa2X && !GetViewport().UseTaa && Mathf.IsEqualApprox(GetViewport().Scaling3DScale,1),"Crisp defaults use native-resolution 2× MSAA without temporal blur");
+            Require(GetViewport().Msaa3D==Viewport.Msaa.Msaa8X && !GetViewport().UseTaa && Mathf.IsEqualApprox(GetViewport().Scaling3DScale,1),"Crisp defaults use native-resolution 8× MSAA without temporal blur");
             var attributes=(CameraAttributesPractical)camera.Attributes;
             Require(!attributes.DofBlurNearEnabled && !attributes.DofBlurFarEnabled && attributes.DofBlurAmount==0,"Robot is fully in focus by default");
             Require(!world.Environment.FogEnabled,"Inspection defaults have no haze");
-            Require(!world.Environment.SsrEnabled && !world.Environment.SsilEnabled,"Stable default reflections and lighting do not depend on screen-space tracing");
+            Require(!world.Environment.SsrEnabled && world.Environment.SsilEnabled,"Maximum-quality indirect lighting complements stable studio reflections");
             var s=effects.Settings;s.Ssao=false;s.Ssil=false;s.Ssr=false;s.Bloom=false;s.Shadows=false;s.Fog=true;s.Exposure=1.31f;s.BloomStrength=.55f;s.Msaa=3;s.Taa=true;s.DepthOfField=true;
             s.Sparks=false;s.Smoke=false;s.BeadDetail=0;
             int notifications=0;effects.SettingsChanged+=_=>notifications++;effects.ApplySettings(false);
@@ -73,7 +66,7 @@ public partial class ViewportChecks : Node
             s.Ssr=true;s.Ssil=true;effects.ApplySettings(false);s.Save();loaded=RenderSettings.Load();
             Require(world.Environment.SsrEnabled && world.Environment.SsilEnabled && loaded.Ssr && loaded.Ssil,"Explicit screen-space effect opt-ins apply immediately and survive reload");
             effects.ResetToCrisp();
-            Require(world.Environment.SsaoEnabled && !world.Environment.SsilEnabled && !world.Environment.SsrEnabled && !GetViewport().UseTaa,"Reset restores stable studio reflections without temporal blur");
+            Require(world.Environment.SsaoEnabled && world.Environment.SsilEnabled && !world.Environment.SsrEnabled && !GetViewport().UseTaa,"Reset restores stable studio reflections without temporal blur");
             GD.Print($"PASS: {_checks} view cube and render controls checks");
         }
         catch(Exception ex){result=1;GD.PrintErr($"FAIL: {ex}");}
@@ -96,12 +89,12 @@ public partial class ViewportChecks : Node
         legacy.SetValue("welding","smoke",false);legacy.SetValue("welding","bead_detail",1);
         Require(legacy.Save(path)==Error.Ok,"Legacy rendering configuration fixture is written");
         var migrated=RenderSettings.Load();
-        Require(!migrated.Ssr && !migrated.Ssil,"Upgrade disables the old artifact-prone reflection and indirect-light defaults");
-        Require(!migrated.Ssao && Mathf.IsEqualApprox(migrated.Exposure,1.27f) && !migrated.Bloom && Mathf.IsEqualApprox(migrated.BloomStrength,.38f) && !migrated.Taa && migrated.Msaa==1 && migrated.ResolutionMode==RenderResolution.Native && !migrated.DepthOfField && !migrated.Smoke && migrated.BeadDetail==1,
+        Require(!migrated.Ssr && migrated.Ssil,"Upgrade enables maximum-quality indirect light while retaining stable reflections");
+        Require(migrated.Ssao && Mathf.IsEqualApprox(migrated.Exposure,1.27f) && !migrated.Bloom && Mathf.IsEqualApprox(migrated.BloomStrength,.38f) && !migrated.Taa && migrated.Msaa==3 && migrated.ResolutionMode==RenderResolution.Native && !migrated.DepthOfField && !migrated.Smoke && migrated.BeadDetail==1,
             "Sharp migration removes blur/upscaling while preserving exposure and welding preferences");
         migrated.Save();
         var current=RenderSettings.Load();
-        Require(!current.Ssr && !current.Ssil && Mathf.IsEqualApprox(current.Exposure,1.27f),"Migrated settings persist across a second load");
+        Require(!current.Ssr && current.Ssil && Mathf.IsEqualApprox(current.Exposure,1.27f),"Migrated settings persist across a second load");
         current.Ssr=true;current.Ssil=true;current.Save();
         var optedIn=RenderSettings.Load();
         Require(optedIn.Ssr && optedIn.Ssil,"Current-format user opt-ins are not overwritten by migration");

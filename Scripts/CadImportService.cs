@@ -7,26 +7,40 @@ using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Security.Cryptography;
 
 namespace EstunStudio;
 
 /// <summary>Runs the bundled OpenCascade geometry worker; the application, editing and planning remain C#.</summary>
 public sealed class CadImportService
 {
+    private static readonly object CacheGate = new();
+    private static readonly Dictionary<string, (WorkerDocument Data, long Bytes)> Cache = new(StringComparer.Ordinal);
+    private static readonly Queue<string> CacheOrder = new();
+    private static long _cacheBytes;
     public async Task<CadDocument> ImportAsync(string path, IProgress<string>? progress = null, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
         path = Path.GetFullPath(path);
-        if (!File.Exists(path)) throw new FileNotFoundException("The STEP file could not be found.", path);
-        if (!new[] { ".step", ".stp" }.Contains(Path.GetExtension(path).ToLowerInvariant()))
-            throw new InvalidDataException("Choose a STEP file (.step or .stp).");
+        if (!File.Exists(path)) throw new FileNotFoundException("The CAD file could not be found.", path);
+        if (!new[] { ".step", ".stp", ".iges", ".igs" }.Contains(Path.GetExtension(path).ToLowerInvariant()))
+            throw new InvalidDataException("Choose a STEP or IGES file (.step, .stp, .iges, .igs).");
         if (new FileInfo(path).Length > 256L * 1024 * 1024)
-            throw new InvalidDataException("This STEP file exceeds the 256 MB desktop import limit.");
+            throw new InvalidDataException("This CAD file exceeds the 256 MB desktop import limit.");
+        string cacheKey;
+        await using (var source = File.OpenRead(path)) cacheKey = Path.GetExtension(path).ToLowerInvariant() + System.Convert.ToHexString(await SHA256.HashDataAsync(source, ct));
+        WorkerDocument? cached = null;
+        lock (CacheGate) if (Cache.TryGetValue(cacheKey, out var entry)) cached = entry.Data;
+        if (cached != null)
+        {
+            progress?.Report("Reusing unchanged CAD geometry");
+            return await Task.Run(() => Convert(cached, path), ct);
+        }
         var (python, worker) = FindRuntime();
         string output = Path.Combine(Path.GetTempPath(), "estun-cad-" + Guid.NewGuid().ToString("N") + ".json");
         try
         {
-            progress?.Report("Reading STEP geometry with OpenCascade…");
+            progress?.Report("Reading CAD geometry with OpenCascade…");
             var start = new ProcessStartInfo(python)
             {
                 UseShellExecute = false,
@@ -69,14 +83,25 @@ public sealed class CadImportService
             }
             ct.ThrowIfCancellationRequested();
             if (process.ExitCode != 0 || !File.Exists(output))
-                throw new InvalidDataException("OpenCascade could not import this STEP file. " + (diagnostics.Length > 1600 ? diagnostics[^1600..] : diagnostics));
+                throw new InvalidDataException("OpenCascade could not import this CAD file. " + (diagnostics.Length > 1600 ? diagnostics[^1600..] : diagnostics));
             if (new FileInfo(output).Length > 320L * 1024 * 1024)
                 throw new InvalidDataException("The tessellated CAD model is too large for interactive use. Simplify the source model first.");
             progress?.Report("Preparing CAD mesh and seam candidates…");
             await using var stream = File.OpenRead(output);
             var data = await JsonSerializer.DeserializeAsync<WorkerDocument>(stream, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }, ct)
                 ?? throw new InvalidDataException("CAD worker returned empty geometry.");
-            return await Task.Run(() => Convert(data, path), ct);
+            var document = await Task.Run(() => Convert(data, path), ct);
+            long size = stream.Length;
+            if (size <= 32L * 1024 * 1024)
+            {
+                lock (CacheGate)
+                {
+                    while (Cache.Count >= 4 || _cacheBytes + size > 64L * 1024 * 1024)
+                    { string old = CacheOrder.Dequeue(); _cacheBytes -= Cache[old].Bytes; Cache.Remove(old); }
+                    if (!Cache.ContainsKey(cacheKey)) { Cache[cacheKey] = (data, size); CacheOrder.Enqueue(cacheKey); _cacheBytes += size; }
+                }
+            }
+            return document;
         }
         finally { try { File.Delete(output); } catch (IOException) { } }
     }
@@ -94,7 +119,7 @@ public sealed class CadImportService
                 if (File.Exists(python) && File.Exists(worker)) return (python, worker);
             }
         }
-        throw new FileNotFoundException("CAD runtime is missing. Run tools/SetupCad.ps1 once, or place the supplied CadRuntime folder beside ESTUN Studio.exe.");
+        throw new FileNotFoundException("CAD runtime is missing. Run tools/SetupCad.ps1 once, or place the supplied CadRuntime folder beside ENCY HYPER - ESTUN.exe.");
     }
 
     private static CadDocument Convert(WorkerDocument raw, string path)

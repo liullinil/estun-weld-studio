@@ -24,20 +24,17 @@ export class SeamSelection {
   constructor(){this.selected=new Set();this.scopes=new Map();this.graph=new Map();this.transaction=null;}
   setCandidates(seams){this.finish();this.graph=connectedSeams(seams);for(const id of this.selected)if(!this.graph.has(id))this.selected.delete(id);}
   reset(){this.selected.clear();this.scopes.clear();this.transaction=null;this.graph.clear();}
-  idsFor(id,scope){
-    const ids=new Set();if(!this.graph.has(id))return ids;ids.add(id);if(scope===0)return ids;
-    for(const neighbor of this.graph.get(id))ids.add(neighbor);if(scope===1)return ids;
-    const queue=[...ids];for(let i=0;i<queue.length;i++)for(const neighbor of this.graph.get(queue[i]))if(!ids.has(neighbor)){ids.add(neighbor);queue.push(neighbor);}return ids;
-  }
+  component(id){if(!this.graph.has(id))return [];const indices=new Map([...this.graph.keys()].map((key,i)=>[key,i])),seen=new Set([id]),order=[id];let frontier=[id];while(frontier.length){const next=[...new Set(frontier.flatMap(key=>[...this.graph.get(key)]).filter(key=>!seen.has(key)))].sort((a,b)=>indices.get(a)-indices.get(b));for(const key of next){seen.add(key);order.push(key);}frontier=next;}return order;}
+  idsFor(id,scope){const order=this.component(id);return new Set(order.slice(0,Math.min(order.length,Math.max(1,Math.round(scope)+1))));}
   begin(id){
     this.finish();if(!this.graph.has(id))return null;
-    const adding=!this.selected.has(id),scope=this.scopes.get(id)??0;
-    this.transaction={id,adding,scope,before:new Set(this.selected),beforeScopes:new Map(this.scopes)};
+    const adding=!this.selected.has(id),order=this.component(id),scope=Math.min(this.scopes.get(id)??0,order.length-1);
+    this.transaction={id,adding,scope,order,before:new Set(this.selected),beforeScopes:new Map(this.scopes)};
     this.applyScope(scope);return this.transaction;
   }
   applyScope(scope){
-    const t=this.transaction;if(!t)return;scope=Math.max(0,Math.min(2,Math.round(scope)));t.scope=scope;
-    this.selected=new Set(t.before);this.scopes=new Map(t.beforeScopes);const affected=this.idsFor(t.id,scope);
+    const t=this.transaction;if(!t)return;scope=Math.max(0,Math.min(t.order.length-1,Math.round(scope)));t.scope=scope;
+    this.selected=new Set(t.before);this.scopes=new Map(t.beforeScopes);const affected=new Set(t.order.slice(0,scope+1));
     for(const id of affected){if(t.adding){this.selected.add(id);if(!t.before.has(id))this.scopes.set(id,scope);}else this.selected.delete(id);}
     // Remember the add scope for removals and later additions, even if the popup
     // is opened from a propagated neighbor rather than its original seed.

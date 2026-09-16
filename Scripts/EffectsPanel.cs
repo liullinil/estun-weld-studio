@@ -27,7 +27,7 @@ public partial class EffectsPanel : PanelContainer
         _built=true;_world=world;_camera=camera;
         Name="RenderEffects";
         Position=new Vector2(689,168);
-        Size=CustomMinimumSize=new Vector2(420,600);
+        Size=CustomMinimumSize=new Vector2(300,120);
         MouseFilter=MouseFilterEnum.Stop;
         ZIndex=20;
         var panel=new StyleBoxFlat { BgColor=new Color("1b252d"),BorderColor=new Color("44515b"),
@@ -39,41 +39,38 @@ public partial class EffectsPanel : PanelContainer
         foreach(string side in new[]{"left","right","top","bottom"}) margin.AddThemeConstantOverride("margin_"+side,20);
         var content=new VBoxContainer();margin.AddChild(content);content.AddThemeConstantOverride("separation",12);
         var header=new HBoxContainer();content.AddChild(header);
-        var title=Label("VISUAL EFFECTS",18,_ink);title.SizeFlagsHorizontal=SizeFlags.ExpandFill;header.AddChild(title);
+        var title=Label("Display setting",16,_ink);title.SizeFlagsHorizontal=SizeFlags.ExpandFill;header.AddChild(title);
         var close=Button("×",31);header.AddChild(close);close.Pressed+=Hide;
-        var intro=Label("Tune the studio and welding simulation.",11,_muted);content.AddChild(intro);
-        var scroll=new ScrollContainer { CustomMinimumSize=new Vector2(374,400),SizeFlagsVertical=SizeFlags.ExpandFill,HorizontalScrollMode=ScrollContainer.ScrollMode.Disabled };
-        content.AddChild(scroll);
-        _rows=new VBoxContainer { SizeFlagsHorizontal=SizeFlags.ExpandFill };scroll.AddChild(_rows);_rows.AddThemeConstantOverride("separation",3);
+        _rows=new VBoxContainer { SizeFlagsHorizontal=SizeFlags.ExpandFill };content.AddChild(_rows);
+        _rows.AddThemeConstantOverride("separation",6);
+        _resolutionInfo=Label("",12,_muted);content.AddChild(_resolutionInfo);
         Settings=RenderSettings.Load();
-        Section("DISPLAY PERFORMANCE");
-        OptionRow("3D resolution",new[]{"Auto","Native","Manual"},()=>Settings.ResolutionMode,v=>Settings.ResolutionMode=v,"Auto keeps the 3D workload near a 1440 × 900 window using spatial FSR. UI and CAD controls remain full resolution. Native uses every display pixel; Manual uses the scale below.");
-        SliderRow("Manual 3D scale",.25f,1,.01f,()=>Settings.ManualRenderScale,v=>Settings.ManualRenderScale=v);
-        _resolutionInfo=Label("",10,_muted);_rows.AddChild(_resolutionInfo);
-        Section("LIGHT & MATERIAL");
-        ToggleRow("Contact shadows / SSAO",()=>Settings.Ssao,v=>Settings.Ssao=v,"Ambient occlusion adds contact depth around close surfaces.");
-        ToggleRow("Screen-space bounce (optional)",()=>Settings.Ssil,v=>Settings.Ssil=v,"Optional screen-space indirect light can introduce noise. HDR studio lighting remains active when this is off.");
-        ToggleRow("Screen reflections (optional)",()=>Settings.Ssr,v=>Settings.Ssr=v,"Optional screen-space reflections can show gaps at object silhouettes and screen edges. Stable HDR and studio reflections remain active when this is off.");
-        ToggleRow("Soft shadows",()=>Settings.Shadows,v=>Settings.Shadows=v,"Enable shadows from the studio softboxes and ceiling light.");
-        ToggleRow("Atmospheric haze",()=>Settings.Fog,v=>Settings.Fog=v,"Very light studio haze. Disabled by default for clear geometry.");
-        ToggleRow("Bloom",()=>Settings.Bloom,v=>Settings.Bloom=v,"Glow around bright light sources and the welding arc.");
-        SliderRow("Bloom strength",0,1.2f,.01f,()=>Settings.BloomStrength,v=>Settings.BloomStrength=v);
-        SliderRow("Exposure",.4f,1.8f,.01f,()=>Settings.Exposure,v=>Settings.Exposure=v);
-        Section("IMAGE CLARITY");
-        OptionRow("Anti-aliasing / MSAA",new[]{"Off","2×","4×","8×"},()=>Settings.Msaa,v=>Settings.Msaa=v,"Multisampling smooths the CAD silhouette while preserving detail.");
-        ToggleRow("Temporal anti-aliasing",()=>Settings.Taa,v=>Settings.Taa=v,"Accumulates previous frames to reduce shimmer. Can soften detail during motion.");
-        ToggleRow("Depth of field",()=>Settings.DepthOfField,v=>Settings.DepthOfField=v,"Cinematic blur behind the robot. Disabled by default for inspection.");
-        Section("WELDING SIMULATION");
-        ToggleRow("Hot sparks",()=>Settings.Sparks,v=>Settings.Sparks=v,"Glowing molten sparks during an active welding pass.");
-        ToggleRow("Welding smoke",()=>Settings.Smoke,v=>Settings.Smoke=v,"Rising translucent smoke around the welding arc.");
-        OptionRow("Weld bead detail",new[]{"Preview","High","Ultra"},()=>Settings.BeadDetail,v=>Settings.BeadDetail=v,"Select the surface detail of deposited weld beads.");
-        var bottom=new HBoxContainer();content.AddChild(bottom);
-        var reset=Button("RESET TO CRISP",151);bottom.AddChild(reset);reset.Pressed+=ResetToCrisp;
-        var saved=Label("Saved automatically",10,_muted);saved.SizeFlagsHorizontal=SizeFlags.ExpandFill;saved.HorizontalAlignment=HorizontalAlignment.Right;bottom.AddChild(saved);
         RefreshControls();ApplySettings(false);Hide();
     }
 
-    public void Toggle() { Visible=!Visible;if(Visible) MoveToFront(); }
+    public void Toggle() { ShowSetting("exposure", Position); }
+
+    public void ShowSetting(string setting, Vector2 position)
+    {
+        foreach(Node child in _rows.GetChildren()){_rows.RemoveChild(child);child.QueueFree();}
+        _refresh.Clear();
+        switch(setting)
+        {
+            case "resolution":
+                OptionRow("3D resolution",new[]{"Auto","Native","Manual"},()=>Settings.ResolutionMode,v=>Settings.ResolutionMode=v,"Native renders every display pixel.");
+                SliderRow("3D scale",.25f,1,.01f,()=>Settings.ManualRenderScale,v=>Settings.ManualRenderScale=v);break;
+            case "msaa": OptionRow("Anti-aliasing",new[]{"Off","2x","4x","8x"},()=>Settings.Msaa,v=>Settings.Msaa=v,"Multisampling preserves CAD detail.");break;
+            case "beads": OptionRow("Weld bead detail",new[]{"Preview","High","Ultra"},()=>Settings.BeadDetail,v=>Settings.BeadDetail=v,"");break;
+            case "bloom-strength": SliderRow("Bloom strength",0,1.2f,.01f,()=>Settings.BloomStrength,v=>Settings.BloomStrength=v);break;
+            default: SliderRow("Exposure",.4f,1.8f,.01f,()=>Settings.Exposure,v=>Settings.Exposure=v);break;
+        }
+        RefreshControls();Position=position;Size=new Vector2(330,150);Show();MoveToFront();
+    }
+
+    public override void _Input(InputEvent input)
+    {
+        if(Visible && input is InputEventMouseButton {ButtonIndex:MouseButton.Left,Pressed:true} mouse && !GetGlobalRect().HasPoint(mouse.Position))Hide();
+    }
 
     public void ResetToCrisp()
     {

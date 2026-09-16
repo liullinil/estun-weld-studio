@@ -149,6 +149,45 @@ class CadImportChecks(unittest.TestCase):
         for i in (1, 2):
             self.assertEqual(json.loads((self.directory / f"daemon-{i}.json").read_text()), self.bracket)
 
+    def test_iges_solid_millimetres_and_inch_units(self):
+        from OCP.IGESControl import IGESControl_Writer
+        from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+        from OCP.gp import gp_Trsf, gp_Vec
+        transform = gp_Trsf()
+        transform.SetTranslation(gp_Vec(30, 40, 50))
+        shape = BRepPrimAPI_MakeBox(25.4, 50.8, 76.2).Shape().Moved(cad.TopLoc_Location(transform))
+        for unit,extension in [("MM", ".iges"), ("INCH", ".igs")]:
+            source = self.directory / ("box-" + unit + extension)
+            writer = IGESControl_Writer(unit, 1)
+            self.assertTrue(writer.AddShape(shape))
+            self.assertTrue(writer.Write(str(source)))
+            output = self.directory / (unit + "-iges.json")
+            cad.import_step(source, output)
+            data = json.loads(output.read_text())
+            self.assertEqual(data["solidCount"], 1)
+            self.assertEqual(data["faceCount"], 6)
+            self.assertEqual(len(data["seams"]), 12)
+            points = list(zip(*[iter(data["vertices"])] * 3))
+            for axis,expected in enumerate([.0254,.0762,.0508]):
+                self.assertAlmostEqual(max(p[axis] for p in points)-min(p[axis] for p in points),expected,places=6)
+            self.assertAlmostEqual(min(p[0] for p in points), .03, places=6)
+            self.assertAlmostEqual(min(p[1] for p in points), .05, places=6)
+
+    def test_iges_curved_surfaces_and_malformed_input(self):
+        from OCP.IGESControl import IGESControl_Writer
+        from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+        source = self.directory / "cylinder.iges"
+        writer = IGESControl_Writer("MM", 1)
+        writer.AddShape(BRepPrimAPI_MakeCylinder(50, 75).Shape())
+        writer.Write(str(source))
+        cad.import_step(source,self.directory / "cylinder-iges.json")
+        data=json.loads((self.directory / "cylinder-iges.json").read_text())
+        self.assertGreater(len(data["indices"]), 100)
+        self.assertTrue(any(len(s["points"])>100 for s in data["seams"]))
+        bad=self.directory / "bad.igs"
+        bad.write_text("invalid IGES")
+        with self.assertRaises(ValueError):cad.import_step(bad,self.directory / "bad-iges.json")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

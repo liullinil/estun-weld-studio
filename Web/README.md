@@ -2,15 +2,19 @@
 
 Published at **https://178.105.241.117/hyper/**. The existing SwissCAM at the origin root is independent and remains unchanged.
 
+Portable Windows desktop: **https://178.105.241.117/hyper/downloads/ENCY-HYPER-ESTUN-Windows-x64.zip**. The browser header exposes Download Desktop. Extract the entire ZIP and launch `ENCY HYPER - ESTUN.exe`; Godot, .NET and Python/OpenCascade are bundled. Desktop imports and planning work locally. Native graphics default to Ultra: native resolution, 8x MSAA, high-quality AO/indirect lighting, 8192-pixel shadow atlases and detailed welding effects. GPU requirements are substantially higher than the browser renderer; individual quality controls remain available.
+
 Source baseline: `liullinil/estun-weld-studio`, `main`, `e783203fb4ec32d592d9d4922d891032fe162100` (latest GitHub main on 2026-09-16).
 
 The browser uses Three.js/WebGL 2, original ENCY S20-180 Pro CAD, native joint frames and limits, the mounted MIG/MAG torch and the original studio HDR. A lossless indexed mesh retains all **514,833 triangles**, every source position and normal; rendering vertices fall from 1,544,499 to 326,788. No geometry is decimated. The workspace header contains only the ENCY HYPER - ESTUN brand. TCP, Trace and all display controls are SwissCAM-style circular icons on the left of the viewport; exposure and resolution open compact controls beside their icons. Only the seam list scrolls. The pendant and preparation panel fit the available height, and the selected seam uses a bright cyan five-pixel line with a wider halo, whether selected in the list or in the viewport.
 
 ## Workflow
 
-The sample loads automatically with no seams selected for processing. Angle and length filters only identify potential seams; Concave/contact is off by default. Drag the two rays on the 90-degree protractor or enter exact angle values. Length has minimum/maximum sliders and exact millimetre inputs. Candidates outside either range are absent from the list, viewport, propagation graph and work order. Click a candidate in the scene or list to add it; click again to remove it. The nearby Propagation control applies to one line, direct connected neighbors, or the full endpoint-connected contour (including branches). Connections use a 0.02 mm endpoint tolerance; midpoint crossings are not connections. Changing scope recalculates that click from its initial snapshot; removal recalls the scope used when each line was added. Candidates cannot be deleted. Narrowing filters prunes the work order; widening does not automatically restore selection.
+The sample loads automatically with no seams selected for processing. STEP/STP and IGES/IGS are supported in both versions, including millimetre/inch units. IGES surface-only models report the absence of solid-contact recognition. Angle and length filters identify potential seams; Concave/contact is off by default. Drag the two rays on the 90-degree protractor or enter exact angle values. Length has minimum/maximum sliders and exact millimetre inputs. Candidates outside either range are absent from the list, viewport, propagation graph and work order. Click a candidate in the scene or list to add it; click again to remove it. Propagation grows one connected seam at a time in deterministic breadth-first order, from the clicked line through neighbors and their neighbors to the entire connected component. Connections use a 0.02 mm endpoint tolerance; midpoint crossings are not connections. Changing scope recalculates that click from its initial snapshot; removal recalls the scope used when each line was added. Candidates cannot be deleted. Narrowing filters prunes the work order; widening does not automatically restore selection.
 
 The protractor starts at zero on the left, with its fixed right-angle profile opening to the right. Only a left-button press on a round handle starts dragging; pointer capture keeps the drag active outside the instrument and release ends it anywhere. Propagation closes on any left click outside its popup. SelectAll / unSelectAll affect the current candidate set. All application UI, hints, warnings and Lua comments are English.
+
+Zoom has no application distance clamp and follows the cursor/surface with adaptive clipping for tiny seams. Picking tolerance scales with pixels. Deselected warning seams return to normal color; warning hints appear only for red selected/problem seams, including hover in the 3D viewport. A separate circular Workpiece gizmo toggle disables the entire translation/rotation gizmo and its hit regions. TCP +Z points outward along the torch wire; TOOL jogging uses this displayed frame while planning retains its established internal approach convention.
 
 Open Part placement for Move/Rotate and numeric transforms. **Generate program** is available only for an explicit nonempty work order and displays percentage, current operation and elapsed time, with a separate **Cancel** control. It runs the native C# planner, then fits and independently validates controller motion primitives. The generated trajectory appears immediately: dashed amber transfers and solid green welding moves.
 
@@ -59,15 +63,17 @@ Open `http://127.0.0.1:18740/hyper/`. For development use `npm run dev` with the
 ## Server layout
 
 - `/srv/hyper/releases/20260916` — packaged native core, frontend and Docker build.
-- Current Docker image `estun-hyper:20260916-warning`; container `hyper-app-v6`.
+- Current Docker image `estun-hyper:20260916-desktop`; container `hyper-app-v7`.
 - Older frontend-only releases remain at `/srv/hyper/releases/20260916-view-cube` and `/srv/hyper/releases/20260916-workspace` for rollback; the current complete release supersedes them.
 - Internal port 18740, Docker network `swisscam-studio_default`; no additional public port.
-- Current complete release: `/srv/hyper/releases/20260916-warning`. Caddy `handle_path /hyper/*` forwards to `hyper-app-v6:18740`; the existing fallback still forwards to `web:80`.
+- Current complete release: `/srv/hyper/releases/20260916-desktop`. Caddy `handle_path /hyper/*` forwards to `hyper-app-v7:18740`; the existing fallback still forwards to `web:80`. `/srv/hyper/downloads` is mounted read-only as the desktop download directory.
 - Native Godot bridge stays on container loopback 18741. Node gateway handles uploads, API proxy and static assets.
 - Container limits: 2,300 MB memory, 1.5 CPU, 256 processes; restart unless stopped.
 - `/srv/hyper/Caddyfile.before-hyper` is the original HTTPS routing backup. `/srv/hyper/root-before.html` and `root-after.html` record unchanged root content.
 
 Package using `python Web/deploy/package.py` after a successful frontend build, then build the included Dockerfile on the target Linux host. It installs pinned Godot 4.5.1 Mono, .NET 8 and Python 3.11/OpenCascade 7.7.2.2b2. Credentials are not part of this project.
+
+Build the native application with `tools/Export.ps1`, then package it with `python tools/PackageDesktop.py`. The script verifies bundled runtimes and creates the Windows ZIP and SHA-256 metadata. Native parity checks: Robot71, Scene67, shell19, view cube85, workflow37, CAD service12. STEP/IGES Python checks11 and browser checks28 passed. The exported Windows executable was launched on the actual GPU and its rendered workspace inspected; browser visual QA was not performed in this delivery.
 
 Verification on the Linux server: STEP sample imports as 3 solids / 36 triangles / 36 potential candidates; the default Concave-off filter leaves 36 potential candidates and zero selected. Explicitly selecting the original eleven contact seams preserves **5 ready / 6 blocked / 152 source moves**, compressed to **91 joint + 5 linear commands**, with **160 playback samples**. A synthetic curved seam verifies circular output (41 source movements → 1 joint + 1 circular command). Native collision tests pass **336 checks**, weaving/export tests **1,625**, detailed-collision tests **213**, CAD tests **9**, and browser mathematical/state tests **23**. Visual browser interaction QA was not performed in this delivery.
 

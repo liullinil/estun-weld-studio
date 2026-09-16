@@ -8,8 +8,8 @@ namespace EstunStudio;
 public partial class PendantPanel : Control
 {
     public event Action<string>? Toast;
-    public event Action? HomeViewRequested;
     public event Action? CloseRequested;
+    public event Action? MotionStopRequested;
     private enum JogFrame { Joint, World, Tool }
     private static readonly Color Ink = new("#e7ecef"), Muted = new("#99a6ae");
     private static readonly Color Orange = new("#eaa05b"), Green = new("#86c9a6");
@@ -23,16 +23,18 @@ public partial class PendantPanel : Control
     private Font _font = null!, _semibold = null!;
     private readonly Label[] _axisNames = new Label[6], _axisValues = new Label[6], _axisUnits = new Label[6];
     private readonly Button[] _rowSelectors = new Button[6], _tabs = new Button[3];
-    private Label _frameDescription = null!, _speedValue = null!, _statusLabel = null!, _waypointLabel = null!;
-    private Label _drivesCaption = null!, _runCaption = null!, _motionHint = null!;
-    private Button _drivesButton = null!, _emergencyButton = null!;
+    private Label _frameDescription = null!, _speedValue = null!, _statusLabel = null!;
+    private Label _operationMode = null!, _motionHint = null!;
+    private readonly System.Collections.Generic.List<Button> _jogButtons = new();
+    private Button _homeButton = null!;
+    private Button _emergencyButton = null!;
     private HSlider _speedSlider = null!;
     private VBoxContainer _content = null!;
     private VBoxContainer _screen = null!;
     private MushroomStopButton _mushroom = null!;
     private JogFrame _frame;
     private int _selectedAxis, _keyboardJogDirection, _pointerJogAxis = -1;
-    private bool _lastEstop, _lastDrives;
+    private bool _lastEstop, _lastDrives, _lastAutomatic;
     private float _readoutTimer;
 
     public void Build(RobotController controller)
@@ -69,13 +71,13 @@ public partial class PendantPanel : Control
         _screen=new VBoxContainer();_screen.AddThemeConstantOverride("separation",6);glass.AddChild(_screen);
         var screenHeader=Row(_screen,4);
         _statusLabel=MakeLabel(screenHeader,"Drives off",12,ScreenMuted,true);_statusLabel.SizeFlagsHorizontal=SizeFlags.ExpandFill;
-        MakeLabel(screenHeader,"T1  /  MANUAL",12,ScreenMuted);
+        _operationMode=MakeLabel(screenHeader,"MANUAL",12,ScreenMuted);
         BuildJogControls();
         BuildSpeedControl();
         BuildHardwareKeys();
         SelectFrame(JogFrame.Joint);
         RefreshState();
-        // The parent owns position and available width; fonts never inherit a canvas scale.
+        // The shell allocates the complete pendant and scales it only when the window is short.
         _content.MinimumSizeChanged += UpdateMinimumHeight;
         UpdateMinimumHeight();
     }
@@ -95,13 +97,13 @@ public partial class PendantPanel : Control
         var close = MakeButton(detail, "Hide", 46, 25);
         close.AddThemeFontSizeOverride("font_size",12);
         close.Name = "HidePendant";
-        close.TooltipText = "Hide the pendant and stop motion. Reopen it from the top toolbar.";
+        close.TooltipText = "Hide the pendant and stop motion. Press P to reopen it.";
         close.Pressed += () => { _pointerJogAxis = -1; _keyboardJogDirection = 0; _controller!.StopMotion(); CloseRequested?.Invoke(); };
         _mushroom=new MushroomStopButton {CustomMinimumSize=new Vector2(80,80),SizeFlagsVertical=SizeFlags.ShrinkCenter,FocusMode=FocusModeEnum.None};header.AddChild(_mushroom);
         _emergencyButton=_mushroom;
         _emergencyButton.Name = "EmergencyStop";
-        _emergencyButton.TooltipText = "Emergency stop · Escape\nStops motion and disables drives. Press RESET to clear the latch.";
-        _emergencyButton.Pressed += () => { EmergencyStop(); Toast?.Invoke("Emergency stop · Press RESET, then enable DRIVES."); };
+        _emergencyButton.TooltipText = "Emergency stop · Escape\nStops motion. Press STOP again to release the latch.";
+        _emergencyButton.Pressed += () => { if (_controller!.EmergencyStopped) { _controller.ResetEmergencyStop(); RefreshState(); Toast?.Invoke("STOP released - MANUAL"); } else { EmergencyStop(); Toast?.Invoke("Emergency stop latched - Press STOP again to release"); } };
     }
 
     private void BuildJogControls()
@@ -153,7 +155,8 @@ public partial class PendantPanel : Control
             _axisUnits[i] = MakeLabel(readout, "°", 12, ScreenMuted);
             _axisUnits[i].CustomMinimumSize = new Vector2(20, 0);
             _axisUnits[i].HorizontalAlignment = HorizontalAlignment.Right;
-            Button minus = PhysicalButton(row, "−", 48, 42), plus = PhysicalButton(row, "+", 48, 42);
+            Button minus = MakeButton(row, "\u2212", 43, 38), plus = MakeButton(row, "+", 43, 38);
+            _jogButtons.Add(minus);_jogButtons.Add(plus);
             minus.AddThemeFontSizeOverride("font_size", 22);
             plus.AddThemeFontSizeOverride("font_size", 22);
             BindJog(minus, axis, -1); BindJog(plus, axis, 1);
@@ -168,6 +171,8 @@ public partial class PendantPanel : Control
         var title = Row(group, 8);
         MakeLabel(title, "Speed override", 12, ScreenMuted).SizeFlagsHorizontal = SizeFlags.ExpandFill;
         _speedValue = MakeLabel(title, "25%", 14, ScreenInk, true);
+        _homeButton=MakeButton(title,"Go Home",72,28);_homeButton.Name="GoHome";
+        _homeButton.Pressed+=()=>{if(RequireMotionPermission()){_controller!.GoHome();Toast?.Invoke("Returning home - Space stops motion");}};
         _speedSlider = new HSlider
         {
             Name = "SpeedOverride", MinValue = 1, MaxValue = 100, Step = 1,
@@ -190,88 +195,8 @@ public partial class PendantPanel : Control
 
     private void BuildHardwareKeys()
     {
-        var power = Row(_content, 8);
-        _drivesButton = HardwareButton(power, "DRIVES OFF", out _drivesCaption);
-        _drivesButton.Name = "Drives";
-        _drivesButton.TooltipText = "Enable or disable drives. Enable DRIVES, then hold a jog control or click HOME / RUN.";
-        _drivesButton.Pressed += () =>
-        {
-            _controller!.SetDrives(!_controller.DrivesEnabled);
-            RefreshState();
-            Toast?.Invoke(_controller.EmergencyStopped ? "Emergency stop is latched. Press RESET first." : _controller.DrivesEnabled ? "Drives enabled · Hold − / + to jog, or click HOME / RUN." : "Drives off · Motion stopped.");
-        };
-        var stop = HardwareButton(power, "STOP MOTION", out _);
-        stop.Name = "StopMotion";
-        ((PhysicalKeyButton)stop).Accent=Orange;
-        stop.TooltipText = "Stop every robot motion · Space\nDrives remain enabled.";
-        stop.ButtonDown += StopMotion;
-        var programHeader = Row(_content, 8);
-        MakeLabel(programHeader, "Motion program", 12, Muted).SizeFlagsHorizontal = SizeFlags.ExpandFill;
-        _waypointLabel = MakeLabel(programHeader, "0 points", 12, Muted);
-        var program = Row(_content, 5);
-        string[] titles = { "HOME", "REC", "RUN", "RESET" };
-        string[] hints =
-        {
-            "Move to the home pose. Enable DRIVES, then click HOME. Space stops motion.",
-            "Record and save the current pose. Right-click to save the program again.",
-            "Run recorded points. Click again or press Space to stop.",
-            "Clear the emergency stop latch. Drives remain off. Right-click to clear the program."
-        };
-        for (int i = 0; i < titles.Length; i++)
-        {
-            Button button = HardwareButton(program, titles[i], out Label caption, 36);
-            button.Name = titles[i] == "REC" ? "Record" : titles[i];
-            button.TooltipText = hints[i];
-            if (i == 0) button.Pressed += () =>
-            {
-                if (!RequireMotionPermission()) return;
-                _controller!.GoHome(); HomeViewRequested?.Invoke(); Toast?.Invoke("Returning home · Press Space to stop.");
-            };
-            if (i == 1)
-            {
-                button.Pressed += () =>
-                {
-                    if (!_controller!.RecordWaypoint()) { Toast?.Invoke(_controller.Status); return; }
-                    bool saved = _controller.SaveWaypoints();
-                    Toast?.Invoke(saved ? $"Point P{_controller.Waypoints.Count:000} recorded and saved." : _controller.Status);
-                    RefreshReadouts();
-                };
-                button.GuiInput += input =>
-                {
-                    if (input is InputEventMouseButton { ButtonIndex: MouseButton.Right, Pressed: true })
-                        Toast?.Invoke(_controller!.SaveWaypoints() ? "Robot program saved." : _controller.Status);
-                };
-            }
-            if (i == 2)
-            {
-                _runCaption = caption;
-                button.Pressed += () =>
-                {
-                    if (_controller!.IsPlaying || _controller.MotionActive) { StopMotion(); return; }
-                    if (!RequireMotionPermission()) return;
-                    if (_controller.Waypoints.Count < 2) { Toast?.Invoke("Record at least two points to run a program."); return; }
-                    _controller.PlayWaypoints(); Toast?.Invoke("Program running · Press Space to stop.");
-                };
-            }
-            if (i == 3)
-            {
-                button.Pressed += () =>
-                {
-                    _pointerJogAxis = -1; _keyboardJogDirection = 0; _controller!.StopMotion();
-                    _controller.ResetEmergencyStop(); RefreshState(); Toast?.Invoke("Controller reset · Enable DRIVES to continue.");
-                };
-                button.GuiInput += input =>
-                {
-                    if (input is InputEventMouseButton { ButtonIndex: MouseButton.Right, Pressed: true })
-                    {
-                        _controller!.ClearWaypoints(); _controller.SaveWaypoints();
-                        Toast?.Invoke("Motion program cleared."); RefreshReadouts();
-                    }
-                };
-            }
-        }
-        _motionHint = MakeLabel(_content, "SPACE  STOP   ·   ESC  E-STOP", 12, Muted);
-        _motionHint.HorizontalAlignment=HorizontalAlignment.Center;
+        _motionHint = MakeLabel(_content, "SPACE  STOP   -   ESC  E-STOP", 12, Muted);
+        _motionHint.HorizontalAlignment = HorizontalAlignment.Center;
     }
 
     public override void _Input(InputEvent input)
@@ -295,7 +220,7 @@ public partial class PendantPanel : Control
         else if (code == Key.Escape && key.Pressed)
         {
             EmergencyStop();
-            Toast?.Invoke("EMERGENCY STOP · Press RESET, then enable DRIVES.");
+            Toast?.Invoke("EMERGENCY STOP - Press STOP again to release.");
             GetViewport().SetInputAsHandled();
         }
         else if (GetViewport().GuiGetFocusOwner() is LineEdit or TextEdit or Godot.Range) return;
@@ -333,7 +258,7 @@ public partial class PendantPanel : Control
             _keyboardJogDirection = 0;
             _controller.StopJog();
         }
-        if (_lastEstop != _controller.EmergencyStopped || _lastDrives != _controller.DrivesEnabled)
+        if (_lastEstop != _controller.EmergencyStopped || _lastDrives != _controller.DrivesEnabled || _lastAutomatic != _controller.AutomaticMode)
         {
             RefreshState();
             QueueRedraw();
@@ -411,7 +336,7 @@ public partial class PendantPanel : Control
 
     private void BindJog(Button button, int axis, int direction)
     {
-        button.TooltipText = $"Axis {axis + 1}: {(direction > 0 ? "positive" : "negative")} direction.\nEnable DRIVES, then hold this button. Release or move the pointer outside it to stop jogging.";
+        button.TooltipText = $"Axis {axis + 1}: {(direction > 0 ? "positive" : "negative")} direction.\nHold this button in MANUAL. Release or move the pointer outside it to stop jogging.";
         button.ButtonDown += () => BeginJog(axis, direction, true);
         button.ButtonUp += StopPointerJog;
         button.MouseExited += () =>
@@ -439,17 +364,9 @@ public partial class PendantPanel : Control
 
     private bool RequireMotionPermission()
     {
-        if (_controller!.EmergencyStopped)
-        {
-            Toast?.Invoke("Emergency stop is latched · Press RESET, then enable DRIVES.");
-            return false;
-        }
-        if (!_controller.DrivesEnabled)
-        {
-            Toast?.Invoke("Enable DRIVES to move. Hold − / + to jog, or click HOME / RUN.");
-            return false;
-        }
-        return true;
+        if (_controller!.EmergencyStopped){Toast?.Invoke("Emergency stop is latched - Press STOP again to release.");return false;}
+        if (_controller.AutomaticMode){Toast?.Invoke("Manual motion is locked in AUTO.");return false;}
+        return _controller.CanMove;
     }
 
     private void StopMotion()
@@ -458,6 +375,7 @@ public partial class PendantPanel : Control
         _pointerJogAxis = -1;
         _keyboardJogDirection = 0;
         _controller.StopMotion();
+        MotionStopRequested?.Invoke();
         Toast?.Invoke("Motion stopped.");
         RefreshState();
         QueueRedraw();
@@ -468,20 +386,23 @@ public partial class PendantPanel : Control
         _pointerJogAxis = -1;
         _keyboardJogDirection = 0;
         _controller!.EmergencyStop();
+        MotionStopRequested?.Invoke();
         RefreshState();
         QueueRedraw();
     }
 
     private void RefreshState()
     {
-        if (_controller is null || _drivesCaption is null) return;
+        if (_controller is null || _motionHint is null) return;
         _lastEstop = _controller.EmergencyStopped;
         _lastDrives = _controller.DrivesEnabled;
-        _mushroom.Latched=_lastEstop;
-        _drivesCaption.Text = _lastDrives ? "DRIVES ON" : "DRIVES OFF";
-        _drivesCaption.AddThemeColorOverride("font_color", _lastDrives ? Green : new Color("#d8dfda"));
-        if(_drivesButton is PhysicalKeyButton key){key.Accent=Green;key.Illuminated=_lastDrives;}
-        _motionHint.Text = _lastEstop ? "E-STOP ACTIVE  ·  PRESS RESET" : "SPACE  STOP   ·   ESC  E-STOP";
+        _lastAutomatic = _controller.AutomaticMode;
+        _mushroom.Latched = _lastEstop;
+        _operationMode.Text = _lastAutomatic ? "AUTO" : "MANUAL";
+        _operationMode.AddThemeColorOverride("font_color", _lastAutomatic ? new Color("#ae671d") : ScreenMuted);
+        foreach(var button in _jogButtons)button.Disabled=_lastEstop||_lastAutomatic;
+        _homeButton.Disabled=_lastEstop||_lastAutomatic;
+        _motionHint.Text = _lastEstop ? "E-STOP ACTIVE - PRESS STOP TO RELEASE" : "SPACE  STOP   -   ESC  E-STOP";
         _motionHint.AddThemeColorOverride("font_color", _lastEstop ? new Color("#f09b87") : Muted);
         RefreshReadouts();
     }
@@ -499,7 +420,7 @@ public partial class PendantPanel : Control
         {
             Transform3D tcp = _controller.TcpTransform;
             Vector3 p = tcp.Origin * 1000;
-            Vector3 e = tcp.Basis.GetEuler() * (180f / Mathf.Pi);
+            Vector3 e = _controller.TcpRotationDegrees;
             float[] values = { p.X, p.Y, p.Z, e.X, e.Y, e.Z };
             for (int i = 0; i < 6; i++) _axisValues[i].Text = Format(values[i], i < 3 ? 1 : 2);
         }
@@ -507,8 +428,7 @@ public partial class PendantPanel : Control
         string status = _controller.EmergencyStopped ? "Emergency stopped" : !_controller.DrivesEnabled ? "Drives off" : !_controller.LastIkSucceeded ? "TCP unreachable" : _controller.Status.Contains("limit", StringComparison.OrdinalIgnoreCase) ? "Joint limit reached" : _controller.IsPlaying ? "Program running" : _controller.MotionActive ? "Motion active" : "Ready to move";
         _statusLabel.Text = status;
         _statusLabel.AddThemeColorOverride("font_color", _controller.EmergencyStopped ? new Color("#a74232") : !_controller.LastIkSucceeded ? new Color("#946827") : _controller.DrivesEnabled ? new Color("#356d48") : ScreenMuted);
-        _waypointLabel.Text = $"{_controller.Waypoints.Count} points";
-        _runCaption.Text = _controller.IsPlaying || _controller.MotionActive ? "STOP" : "RUN";
+
     }
 
     private static string Format(float value, int decimals)

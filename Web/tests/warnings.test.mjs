@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isWarning,warningReason,warningIds } from '../src/warnings.js';
+import { isWarning,warningReason,warningIds,isRedSeam } from '../src/warnings.js';
 import { ProgramPlayback } from '../src/playback.js';
 test('warning metadata exposes collision and partial reason without treating Ready as warning',()=>{const seam={id:'S1',state:'Warning',Reason:'Partial seam',warningReasons:['A2 / workpiece collision'],partial:true};assert.equal(isWarning(seam),true);assert.match(warningReason(seam),/A2/);assert.equal(isWarning({state:'Ready'}),false);assert.deepEqual([...warningIds({seams:[seam,{id:'S2',state:'Ready'}]})],['S1']);});
+test('deselected warnings and blocked candidates never remain red or acquire warning hints',()=>{for(const state of ['Warning','Collision','Unreachable']){const seam={state};assert.equal(isRedSeam(seam,true),true);assert.equal(isRedSeam(seam,false),false);}assert.equal(isRedSeam({state:'Ready'},true),false);});
 test('simulation collision changes follow current segment fraction without network latency',()=>{const p=new ProgramPlayback();p.load({startJoints:[0,0,0,0,0,0],moves:[{joints:[1,0,0,0,0,0],arc:true,duration:1,collisionFrames:[{t:0,links:[],reasons:[]},{t:.1,links:[0,2],reasons:['Base / A2']},{t:.3,links:[],reasons:[]}]}]});p.startFrom([0,0,0,0,0,0]);p.tick(.05,1);assert.deepEqual(p.collision.links,[]);p.tick(.05,1);assert.deepEqual(p.collision.links,[0,2]);p.pause();assert.deepEqual(p.collision.links,[0,2]);p.resume();for(let i=0;i<5;i++)p.tick(.05,1);assert.deepEqual(p.collision.links,[]);});

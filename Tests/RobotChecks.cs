@@ -102,9 +102,10 @@ public partial class RobotChecks : Node
         AddChild(controller);
         controller.Initialize(joints, tip);
         controller.SetPhysicsProcess(false);
-        Require(!controller.DrivesEnabled && !controller.CanMove && !controller.EmergencyStopped, "Startup keeps drives off until explicitly enabled");
+        Require(controller.DrivesEnabled && controller.CanMove && !controller.EmergencyStopped, "Startup enables drives for manual simulation");
         Require(controller.TcpPosition.DistanceTo(tip.GlobalPosition) < .00001f, "Reported FK matches rendered nested pivot chain");
-        Require(!controller.SetJointJog(0, 1), "Jog rejected with drives off");
+        controller.SetDrives(false);
+        Require(!controller.SetJointJog(0, 1), "Jog rejected when drives explicitly disabled");
         controller.SetDrives(true);
         Require(controller.CanMove && controller.SetJointJog(0, 1), "Drives on permits joint jogging without Space or a separate enable switch");
         float[] before = controller.AnglesDegrees;
@@ -122,7 +123,7 @@ public partial class RobotChecks : Node
         Require(controller.AnglesDegrees.SequenceEqual(before), "Emergency stop prevents motion");
         Require(!controller.SetDrives(true), "Latched emergency stop prevents drive re-enable");
         controller.ResetEmergencyStop();
-        Require(!controller.EmergencyStopped && !controller.DrivesEnabled, "Reset clears latch without automatically enabling drives");
+        Require(!controller.EmergencyStopped && controller.DrivesEnabled, "Releasing emergency stop restores drives ready");
 
         controller.SetDrives(true);
         controller.SpeedOverride = 1f;
