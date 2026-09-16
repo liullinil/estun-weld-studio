@@ -3,7 +3,7 @@ export class CollisionMonitor {
   reset(){this.revision++;this.sceneId=null;this.lastKey='';this.apply([],null);}
   setEnabled(enabled){this.enabled=enabled;this.revision++;this.lastKey='';if(!enabled)this.apply([],null);}
   async tick(angles,document,transform,now,busy){
-    if(!this.enabled||busy||this.pending||now-this.lastAt<200)return;
+    if(!this.enabled||busy||this.pending||now-this.lastAt<60)return;
     const key=angles.map(v=>v.toFixed(4)).join(',');if(key===this.lastKey&&this.sceneId)return;
     this.lastAt=now;this.pending=true;const revision=this.revision;
     try{

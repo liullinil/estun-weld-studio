@@ -2,6 +2,7 @@ using Godot;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Threading;
 
 namespace EstunStudio;
@@ -24,6 +25,17 @@ public sealed class CollisionScene
     private readonly float _floorY;
     private readonly CollisionPair[] _selfPairs;
     private readonly CollisionPairGroup[] _selfPairGroups;
+    private readonly SourceSelfGeometry? _sourceSelf;
+    private static readonly ConditionalWeakTable<IReadOnlyDictionary<int, Vector3[]>, SourceSelfGeometry> SourceCache = new();
+    private sealed class SourceSelfGeometry
+    {
+        public readonly TriangleBvh Base, Shoulder;
+        public SourceSelfGeometry(IReadOnlyDictionary<int, Vector3[]> source)
+        {
+            Base = new TriangleBvh(source[0], collectComponentSamples: true);
+            Shoulder = new TriangleBvh(source[2], collectComponentSamples: true);
+        }
+    }
     private readonly record struct CollisionPair(int A, int B, int Group, float RadiusSquared);
     private readonly record struct CollisionPairGroup(int Start, int End, int LinkA, int LinkB);
     public float Margin { get; }
@@ -31,7 +43,8 @@ public sealed class CollisionScene
     public int CapsuleCount => _capsules.Length;
 
     public CollisionScene(Vector3[] partTriangles, IEnumerable<RobotCapsule> robotCapsules,
-        Transform3D[]? rest = null, float floorY = -.22f, float margin = .002f, Vector3[]? staticTriangles = null)
+        Transform3D[]? rest = null, float floorY = -.22f, float margin = .002f, Vector3[]? staticTriangles = null,
+        IReadOnlyDictionary<int, Vector3[]>? robotTriangles = null)
     {
         _part = new TriangleBvh(partTriangles);
         _fixtures = new TriangleBvh(staticTriangles ?? Array.Empty<Vector3>());
@@ -41,6 +54,11 @@ public sealed class CollisionScene
         _rest = rest ?? RobotKinematics.StandardRestTransforms();
         _floorY = floorY;
         Margin = Math.Max(0, margin);
+        // Base and A2 are not adjacent and must still collide. Their curved source housings
+        // leave gaps inside the slab boxes, however, so confirm that pair using the CAD mesh.
+        // Sharing the immutable source dictionary also shares the expensive source BVHs.
+        if (robotTriangles != null && robotTriangles.ContainsKey(0) && robotTriangles.ContainsKey(2))
+            _sourceSelf = SourceCache.GetValue(robotTriangles, source => new SourceSelfGeometry(source));
         var pairs = new List<CollisionPair>();
         for (int i = 0; i < _capsules.Length; i++)
             for (int j = i + 1; j < _capsules.Length; j++)
@@ -114,6 +132,7 @@ public sealed class CollisionScene
             bounds[i] = new Aabb(low, high - low);
             linkMin[c.Link] = linkMin[c.Link].Min(low); linkMax[c.Link] = linkMax[c.Link].Max(high);
         }
+        bool? baseShoulderHit = null;
         foreach (CollisionPairGroup group in _selfPairGroups)
         {
             Vector3 lowA = linkMin[group.LinkA], highA = linkMax[group.LinkA], lowB = linkMin[group.LinkB], highB = linkMax[group.LinkB];
@@ -129,6 +148,8 @@ public sealed class CollisionScene
                 else if (a.LocalBounds.HasValue) hit = boxes[i].IntersectsCapsule(b.A, b.B, b.Radius + Margin);
                 else if (b.LocalBounds.HasValue) hit = boxes[j].IntersectsCapsule(a.A, a.B, a.Radius + Margin);
                 else hit = true;
+                if (hit && _sourceSelf != null && ((a.Link == 0 && b.Link == 2) || (a.Link == 2 && b.Link == 0)))
+                    hit = baseShoulderHit ??= _sourceSelf.Base.IntersectsMesh(_sourceSelf.Shoulder, transforms[2], Margin);
                 if (hit)
                 { reason = $"Self collision: {LinkName(a.Link)} / {LinkName(b.Link)}"; if (contacts == null) return false; contacts.Add(new("self", reason, a.Link, b.Link)); }
             }
@@ -330,15 +351,18 @@ public sealed class TriangleBvh
 {
     private readonly Vector3[] _vertices;
     private readonly int[] _order;
+    private readonly Lazy<Vector3[]> _componentSamples;
     private readonly List<Branch> _nodes = new();
     private readonly record struct Branch(Vector3 Min, Vector3 Max, int Start, int Count, int Left, int Right);
     private readonly record struct RayHit(float Distance, float Orientation);
     public Aabb Bounds { get; }
 
-    public TriangleBvh(Vector3[] triangles)
+    public TriangleBvh(Vector3[] triangles, bool collectComponentSamples = false)
     {
         if (triangles.Length % 3 != 0 || triangles.Any(p => !p.IsFinite())) throw new ArgumentException("Finite triangle triplets are required.");
         _vertices = (Vector3[])triangles.Clone(); _order = Enumerable.Range(0, triangles.Length / 3).ToArray();
+        _componentSamples = new Lazy<Vector3[]>(() => ComponentSamples(_vertices));
+        if (collectComponentSamples) _ = _componentSamples.Value;
         if (_order.Length == 0) { Bounds = new Aabb(); return; }
         Build(0, _order.Length);
         Bounds = new Aabb(_nodes[0].Min, _nodes[0].Max - _nodes[0].Min);
@@ -361,6 +385,68 @@ public sealed class TriangleBvh
     }
 
     private float Centroid(int triangle, int axis) => (_vertices[triangle * 3][axis] + _vertices[triangle * 3 + 1][axis] + _vertices[triangle * 3 + 2][axis]) / 3f;
+
+    /// <summary>Source surface distance plus closed-solid containment; otherPose maps the other mesh into this mesh's frame.</summary>
+    public bool IntersectsMesh(TriangleBvh other, Transform3D otherPose, float margin)
+    {
+        if (_nodes.Count == 0 || other._nodes.Count == 0) return false;
+        if (MeshNodes(0, other, 0, otherPose, margin)) return true;
+        // Test every disconnected CAD shell: one representative of an assembly does not
+        // detect a small enclosed component when its other components remain outside.
+        foreach (Vector3 point in other._componentSamples.Value)
+            if (ContainsPoint(otherPose * point)) return true;
+        Transform3D inverse = otherPose.AffineInverse();
+        foreach (Vector3 point in _componentSamples.Value)
+            if (other.ContainsPoint(inverse * point)) return true;
+        return false;
+    }
+
+    private bool MeshNodes(int id, TriangleBvh other, int otherId, Transform3D pose, float margin)
+    {
+        Branch a = _nodes[id], b = other._nodes[otherId];
+        var bBox = new OrientedBounds(new Aabb(b.Min, b.Max - b.Min), pose);
+        Aabb worldB = bBox.WorldBounds.Grow(margin);
+        if (!Overlap(a.Min, a.Max, worldB.Position, worldB.End)) return false;
+        var aBox = new OrientedBounds(new Aabb(a.Min, a.Max - a.Min), Transform3D.Identity);
+        if (!aBox.Intersects(bBox, margin)) return false;
+        if (a.Left >= 0 && (b.Left < 0 || (a.Max - a.Min).LengthSquared() >= (b.Max - b.Min).LengthSquared()))
+            return MeshNodes(a.Left, other, otherId, pose, margin) || MeshNodes(a.Right, other, otherId, pose, margin);
+        if (b.Left >= 0)
+            return MeshNodes(id, other, b.Left, pose, margin) || MeshNodes(id, other, b.Right, pose, margin);
+        float distanceSquared = margin * margin;
+        for (int i = b.Start; i < b.Start + b.Count; i++)
+        {
+            int v = other._order[i] * 3;
+            Vector3 p = pose * other._vertices[v], q = pose * other._vertices[v + 1], r = pose * other._vertices[v + 2];
+            if (!aBox.IntersectsTriangle(p, q, r, margin)) continue;
+            for (int j = a.Start; j < a.Start + a.Count; j++)
+            {
+                int w = _order[j] * 3;
+                Vector3 x = _vertices[w], y = _vertices[w + 1], z = _vertices[w + 2];
+                if (DistanceSegmentTriangleSquared(p, q, x, y, z) <= distanceSquared ||
+                    DistanceSegmentTriangleSquared(q, r, x, y, z) <= distanceSquared ||
+                    DistanceSegmentTriangleSquared(r, p, x, y, z) <= distanceSquared ||
+                    DistanceSegmentTriangleSquared(x, y, p, q, r) <= distanceSquared ||
+                    DistanceSegmentTriangleSquared(y, z, p, q, r) <= distanceSquared ||
+                    DistanceSegmentTriangleSquared(z, x, p, q, r) <= distanceSquared) return true;
+            }
+        }
+        return false;
+    }
+
+    private static Vector3[] ComponentSamples(Vector3[] vertices)
+    {
+        var parent = Enumerable.Range(0, vertices.Length / 3).ToArray();
+        int Root(int i) { while (parent[i] != i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; }
+        var firstTriangle = new Dictionary<Vector3, int>();
+        for (int i = 0; i < vertices.Length; i++)
+        {
+            int triangle = i / 3;
+            if (firstTriangle.TryGetValue(vertices[i], out int previous)) parent[Root(triangle)] = Root(previous);
+            else firstTriangle.Add(vertices[i], triangle);
+        }
+        return Enumerable.Range(0, parent.Length).Where(i => Root(i) == i).Select(i => vertices[i * 3]).ToArray();
+    }
 
     public bool IntersectsCapsule(Vector3 a, Vector3 b, float radius)
     {

@@ -24,6 +24,10 @@ public static class WeldPlanner
         public List<WeldMotion> Entry { get; } = new();
         public List<WeldMotion> Exit { get; } = new();
         public float[] EndAngles => Exit.Count > 0 ? Exit[^1].TargetAngles : Weld[^1].TargetAngles;
+        public bool Partial;
+        public bool HasCollision;
+        public float ProcessedLength;
+        public HashSet<string> Warnings { get; } = new();
     }
 
     public static WeldProgram Plan(WeldPlanRequest request, CancellationToken cancellation = default, Action<float, string>? progress = null)
@@ -42,7 +46,8 @@ public static class WeldPlanner
             if (points.Length < 2 || result.Length < .0005f || points.Any(p => !p.IsFinite())) { result.Reason = "Seam is too short or invalid"; continue; }
             route.Add(new RouteSeam { Source = seam, Result = result, Points = points });
         }
-        if (!request.Collision.Check(request.StartAngles, out string startReason))
+        if (!request.Collision.Check(request.StartAngles, out string startReason) &&
+            (!request.AllowWarningPaths || !WithinLimits(request.StartAngles)))
         {
             foreach (RouteSeam seam in route) { seam.Result.State = WeldSeamState.TransferBlocked; seam.Result.Reason = "Start pose: " + startReason; }
             progress?.Invoke(1, "Move robot or workpiece clear of the starting collision"); return program;
@@ -93,9 +98,20 @@ public static class WeldPlanner
                 }
                 if (candidate != null) break;
             }
+            bool warningPath = false;
+            if (candidate == null && request.AllowWarningPaths)
+            {
+                progress?.Invoke((index + .92f) / Math.Max(1, route.Count), $"Finding reachable preview for {seam.Source.Id}");
+                candidate = FindWarningPath(request, seam, current, cancellation);
+                warningPath = candidate != null;
+            }
             if (candidate == null) { seam.Result.State = state; seam.Result.Reason = reason; continue; }
-            seam.Result.State = WeldSeamState.Ready;
-            seam.Result.Reason = "Six-axis path and transfers validated";
+            seam.Result.ProcessedLength = warningPath ? candidate.ProcessedLength : seam.Result.Length;
+            seam.Result.Partial = candidate.Partial;
+            seam.Result.HasCollision = candidate.HasCollision;
+            seam.Result.WarningReasons = candidate.Warnings.ToArray();
+            seam.Result.State = warningPath ? WeldSeamState.Warning : WeldSeamState.Ready;
+            seam.Result.Reason = warningPath ? string.Join("; ", candidate.Warnings) : "Six-axis path and transfers validated";
             seam.Result.Order = ++ready;
             program.Motions.AddRange(candidate.Entry);
             program.Motions.AddRange(candidate.Weld);
@@ -105,6 +121,147 @@ public static class WeldPlanner
         progress?.Invoke(1, program.Summary);
         return program;
     }
+
+    // Warning mode never invents an IK result. It keeps the longest continuous, reachable
+    // portion and allows geometric contacts only after the normal safe-path search fails.
+    private static Candidate? FindWarningPath(WeldPlanRequest request, RouteSeam seam, float[] current, CancellationToken cancellation)
+    {
+        Candidate? best = null;
+        bool bestReverse = false;
+        foreach (bool reverse in new[] { seam.Reverse, !seam.Reverse })
+        {
+            SampleSeam(request, seam.Source, reverse, out Vector3[] points, out Vector3[] approaches);
+            foreach ((float roll, float lean) in new[] { (0f, 0f), (180f, 0f), (90f, 0f), (-90f, 0f), (0f, -12f), (0f, 12f) })
+            {
+                cancellation.ThrowIfCancellationRequested();
+                var poses = new Transform3D[points.Length];
+                for (int i = 0; i < points.Length; i++)
+                {
+                    Vector3 tangent = (points[Math.Min(i + 1, points.Length - 1)] - points[Math.Max(0, i - 1)]).Normalized();
+                    Vector3 approach = (approaches[i] * Mathf.Cos(Mathf.DegToRad(lean)) + tangent * Mathf.Sin(Mathf.DegToRad(lean))).Normalized();
+                    Basis basis = TorchBasis(tangent, approach, roll);
+                    poses[i] = new Transform3D(basis, points[i] + basis.Y * request.ArcGap);
+                }
+                Candidate? candidate = LongestReachableRun(request, poses, points, current, seam.Source.Id, cancellation);
+                if (candidate == null || (best != null && candidate.ProcessedLength <= best.ProcessedLength + .00001f)) continue;
+                best = candidate; bestReverse = reverse;
+                if (!best.Partial) break;
+            }
+            if (best is { Partial: false }) break;
+        }
+        if (best == null) return null;
+        seam.Result.Reversed = bestReverse;
+        WeldMotion first = best.Weld[0];
+        Transform3D approachPose = first.Tcp; approachPose.Origin += approachPose.Basis.Y * request.RetractDistance;
+        var approachSolution = RobotKinematics.Solve(approachPose, first.TargetAngles, request.JointRest, request.ToolTransform);
+        var approachLeg = new List<WeldMotion>();
+        if (approachSolution.Success && CartesianLeg(request, approachSolution.AnglesDegrees, first.Tcp, seam.Source.Id, approachLeg,
+            cancellation, out _, first.TargetAngles, ignoreCollisions: true))
+        {
+            AddJointTransfer(request, current, approachSolution.AnglesDegrees, seam.Source.Id, best.Entry);
+            best.Entry.AddRange(approachLeg);
+        }
+        else
+        {
+            AddJointTransfer(request, current, first.TargetAngles, seam.Source.Id, best.Entry);
+            best.Warnings.Add("Straight approach is unreachable; preview uses a joint transfer with the torch off");
+        }
+        WeldMotion last = best.Weld[^1];
+        Transform3D retract = last.Tcp; retract.Origin += retract.Basis.Y * request.RetractDistance;
+        if (!CartesianLeg(request, last.TargetAngles, retract, seam.Source.Id, best.Exit, cancellation, out _, ignoreCollisions: true))
+        {
+            best.Exit.Add(Motion(last.TargetAngles, last.Tcp, last.WeldPoint, false, seam.Source.Id, .04f));
+            best.Warnings.Add("Retraction is unreachable; torch stops at the last reachable seam point");
+        }
+        float[] previous = current;
+        foreach (WeldMotion motion in best.Entry.Concat(best.Weld).Concat(best.Exit))
+        {
+            cancellation.ThrowIfCancellationRequested();
+            if (!request.Collision.CheckMotion(previous, motion.TargetAngles, out string collision, cancellation))
+            { best.HasCollision = true; best.Warnings.Add(collision); }
+            if (!request.Collision.CheckDetailed(motion.TargetAngles, out _, out CollisionContact[] contacts))
+            {
+                best.HasCollision = true;
+                foreach (CollisionContact contact in contacts) best.Warnings.Add(contact.Reason);
+            }
+            previous = motion.TargetAngles;
+        }
+        if (best.Warnings.Count == 0) best.Warnings.Add("Preview uses an alternative reachable path after full-path validation failed");
+        return best;
+    }
+
+    private static Candidate? LongestReachableRun(WeldPlanRequest request, Transform3D[] poses, Vector3[] points,
+        float[] current, string seamId, CancellationToken cancellation)
+    {
+        List<WeldMotion> run = new(), bestRun = new();
+        float runLength = 0, bestLength = 0;
+        string failure = "Six-axis IK is unreachable on part of the seam";
+        // Triangle inequality gives an exact upper bound, avoiding expensive IK for obviously remote samples.
+        float reach = request.JointRest.Sum(j => j.Origin.Length()) + request.ToolTransform.Origin.Length() + .001f;
+        void KeepRun()
+        {
+            if (run.Count > 1 && runLength > bestLength) { bestRun = new List<WeldMotion>(run); bestLength = runLength; }
+        }
+        for (int i = 0; i < poses.Length; i++)
+        {
+            cancellation.ThrowIfCancellationRequested();
+            RobotKinematics.IkResult solved = default;
+            bool connected = false;
+            if (poses[i].Origin.Length() <= reach)
+            {
+                if (run.Count > 0)
+                {
+                    WeldMotion prior = run[^1];
+                    solved = RobotKinematics.Solve(poses[i], prior.TargetAngles, request.JointRest, request.ToolTransform);
+                    if (solved.Success && MaximumJointChange(prior.TargetAngles, solved.AnglesDegrees) <= 18f)
+                    {
+                        Vector3 midpoint = RobotKinematics.Forward(Interpolate(prior.TargetAngles, solved.AnglesDegrees, .5f), request.JointRest, request.ToolTransform).Origin;
+                        connected = midpoint.DistanceTo(prior.Tcp.Origin.Lerp(poses[i].Origin, .5f)) <= .001f;
+                        if (!connected) failure = "TCP deviation exceeds 1 mm near a singularity";
+                    }
+                    else failure = solved.Success ? "Joint branch discontinuity / wrist singularity" : $"Six-axis IK fails at {100f * i / (poses.Length - 1):0}% of seam";
+                }
+                if (!connected)
+                {
+                    KeepRun(); run.Clear(); runLength = 0;
+                    foreach (float[] seed in Seeds(current))
+                    {
+                        cancellation.ThrowIfCancellationRequested();
+                        solved = RobotKinematics.Solve(poses[i], seed, request.JointRest, request.ToolTransform);
+                        if (solved.Success) break;
+                    }
+                }
+            }
+            if (!solved.Success)
+            {
+                KeepRun(); run.Clear(); runLength = 0;
+                continue;
+            }
+            float duration = .04f;
+            if (connected)
+            {
+                float distance = run[^1].WeldPoint.DistanceTo(points[i]); runLength += distance;
+                duration = MotionDuration(run[^1].TargetAngles, solved.AnglesDegrees, distance / request.WeldSpeed);
+            }
+            run.Add(Motion(solved.AnglesDegrees, poses[i], points[i], connected, seamId, duration));
+        }
+        KeepRun();
+        if (bestRun.Count < 2 || bestLength < .0005f) return null;
+        var candidate = new Candidate { ProcessedLength = bestLength, Partial = bestRun.Count < poses.Length };
+        candidate.Weld.AddRange(bestRun);
+        if (candidate.Partial) candidate.Warnings.Add($"Partial seam: {100f * bestLength / Math.Max(.000001f, Length(points)):0.#}% reachable ({bestLength * 1000:0.#} mm); {failure}");
+        return candidate;
+    }
+
+    private static void AddJointTransfer(WeldPlanRequest request, float[] from, float[] to, string seamId, List<WeldMotion> destination)
+    {
+        Transform3D start = RobotKinematics.Forward(from, request.JointRest, request.ToolTransform);
+        Transform3D end = RobotKinematics.Forward(to, request.JointRest, request.ToolTransform);
+        destination.Add(Motion(to, end, end.Origin, false, seamId, MotionDuration(from, to, start.Origin.DistanceTo(end.Origin) / request.TravelSpeed)));
+    }
+
+    private static bool WithinLimits(float[] angles) => angles.Length == 6 && angles.Select((angle, i) =>
+        float.IsFinite(angle) && angle >= RobotController.JointMinimum[i] && angle <= RobotController.JointMaximum[i]).All(valid => valid);
 
     private static Candidate? TrySeam(WeldPlanRequest request, Vector3[] points, Vector3[] approaches, float roll,
         float[] current, string seamId, CancellationToken cancellation, out string reason, out WeldSeamState state)
@@ -203,7 +360,7 @@ public static class WeldPlanner
     }
 
     private static bool CartesianLeg(WeldPlanRequest request, float[] from, Transform3D target, string seamId,
-        List<WeldMotion> result, CancellationToken cancellation, out string reason, float[]? requiredEnd = null)
+        List<WeldMotion> result, CancellationToken cancellation, out string reason, float[]? requiredEnd = null, bool ignoreCollisions = false)
     {
         Transform3D start = RobotKinematics.Forward(from, request.JointRest, request.ToolTransform);
         int count = Math.Max(1, (int)Math.Ceiling(Math.Max(start.Origin.DistanceTo(target.Origin) / .025f,
@@ -216,7 +373,7 @@ public static class WeldPlanner
             var solution = RobotKinematics.Solve(pose, previous, request.JointRest, request.ToolTransform);
             if (!solution.Success) { reason = "Clearance pose is unreachable"; return false; }
             float[] angles = i == count && requiredEnd != null ? requiredEnd : solution.AnglesDegrees;
-            if (!request.Collision.CheckMotion(previous, angles, out reason, cancellation)) return false;
+            if (!ignoreCollisions && !request.Collision.CheckMotion(previous, angles, out reason, cancellation)) return false;
             float duration = MotionDuration(previous, angles, start.Origin.DistanceTo(target.Origin) / count / request.TravelSpeed);
             trial.Add(Motion(angles, pose, pose.Origin, false, seamId, duration)); previous = angles;
         }

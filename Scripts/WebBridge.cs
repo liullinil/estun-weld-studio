@@ -7,6 +7,7 @@ using System.Linq;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -28,6 +29,7 @@ public partial class WebBridge : Node
     private readonly SemaphoreSlim _httpSlots = new(4);
     private HttpListener? _listener;
     private RobotCapsule[] _capsules = Array.Empty<RobotCapsule>();
+    private Dictionary<int, Vector3[]> _robotTriangles = new();
     private Vector3[] _fixtures = Array.Empty<Vector3>();
     private int _activePlan;
 
@@ -63,7 +65,11 @@ public partial class WebBridge : Node
             _fixtures = new CylinderMesh { TopRadius = .70f, BottomRadius = .70f, Height = .201f, RadialSegments = 64 }
                 .GetFaces().Select(p => p + new Vector3(0, -.1095f, 0)).ToArray();
             string meshPath = ProjectSettings.GlobalizePath(RobotModel.MeshPath);
-            _capsules = await Task.Run(() => CollisionScene.CreateRobotCapsules(ReadSource(meshPath)).Concat(WeldTorch.CollisionVolumes()).ToArray());
+            _capsules = await Task.Run(() =>
+            {
+                _robotTriangles = ReadSource(meshPath);
+                return CollisionScene.CreateRobotCapsules(_robotTriangles).Concat(WeldTorch.CollisionVolumes()).ToArray();
+            });
             string bind = System.Environment.GetEnvironmentVariable("ESTUN_BRIDGE_BIND") ?? "127.0.0.1";
             if (bind == "0.0.0.0") bind = "+";
             if (bind != "+" && bind != "localhost" && !IPAddress.TryParse(bind, out _)) throw new ArgumentException("Invalid ESTUN_BRIDGE_BIND host.");
@@ -191,7 +197,7 @@ public partial class WebBridge : Node
             }
             else
             {
-                collision = input.Document == null ? new CollisionScene(Array.Empty<Vector3>(), _capsules, staticTriangles: _fixtures) : MakeCollision(Prepare(input));
+                collision = input.Document == null ? new CollisionScene(Array.Empty<Vector3>(), _capsules, staticTriangles: _fixtures, robotTriangles: _robotTriangles) : MakeCollision(Prepare(input));
                 sceneId = Guid.NewGuid().ToString("N");
                 lock (_collisionScenesGate)
                 {
@@ -220,7 +226,7 @@ public partial class WebBridge : Node
             var request = new WeldPlanRequest
             {
                 Seams = input.Seams, PartTransform = input.PartTransform, StartAngles = input.StartAngles,
-                ToolTransform = WeldTorch.ToolTransform, Collision = collision, PartName = input.Name
+                ToolTransform = WeldTorch.ToolTransform, Collision = collision, PartName = input.Name, AllowWarningPaths = true
             };
             WeldProgram program = WeldPlanner.Plan(request, job.Cancellation.Token,
                 (progress, message) => { lock (job.Gate) { job.Progress = progress * .7f; job.Message = message; } });
@@ -229,9 +235,11 @@ public partial class WebBridge : Node
                 (progress, message) => { lock (job.Gate) { job.Progress = .7f + progress * .15f; job.Message = message; } });
             double weavingSeconds = watch.Elapsed.TotalSeconds - planningSeconds;
             RobotPostprocessorResult controller = RobotPostprocessor.Export(program, request, job.Cancellation.Token,
-                (progress, message) => { lock (job.Gate) { job.Progress = .85f + progress * .15f; job.Message = message; } },
+                (progress, message) => { lock (job.Gate) { job.Progress = .85f + progress * .1f; job.Message = message; } },
                 new RobotPostprocessorOptions { Weaving = input.Weaving, PositionToleranceMetres = input.Weaving.Enabled ? .000025f : .0005f });
-            object result = MakeResult(program, controller, planningSeconds, weavingSeconds, watch.Elapsed.TotalSeconds, 1, out string summary);
+            CollisionFrame[][] frames = BuildCollisionTimeline(program, controller.PlaybackMotions, request, job.Cancellation.Token,
+                (progress, message) => { lock (job.Gate) { job.Progress = .95f + progress * .05f; job.Message = message; } });
+            object result = MakeResult(program, controller, frames, planningSeconds, weavingSeconds, watch.Elapsed.TotalSeconds, 1, out string summary);
             lock (job.Gate) { job.Program = program; job.Request = request; job.Weaving = input.Weaving; job.Result = result; job.Progress = 1; job.Message = summary; job.Status = "complete"; }
         }
         catch (OperationCanceledException) { lock (job.Gate) { job.Status = "cancelled"; job.Message = "Planning cancelled or exceeded the 10-minute time limit."; } }
@@ -245,10 +253,12 @@ public partial class WebBridge : Node
         {
             var watch = System.Diagnostics.Stopwatch.StartNew();
             RobotPostprocessorResult controller = RobotPostprocessor.Export(job.Program!, job.Request!, job.Cancellation.Token,
-                (progress, message) => { lock (job.Gate) { job.Progress = progress; job.Message = message; } },
+                (progress, message) => { lock (job.Gate) { job.Progress = progress * .9f; job.Message = message; } },
                 new RobotPostprocessorOptions { LinearizeArcs = input.LinearizeArcs, TorchDigitalOutput = input.TorchDigitalOutput,
                     Weaving = job.Weaving, PositionToleranceMetres = job.Weaving.Enabled ? .000025f : .0005f });
-            object result = MakeResult(job.Program!, controller, 0, 0, watch.Elapsed.TotalSeconds, input.TorchDigitalOutput, out string summary);
+            CollisionFrame[][] frames = BuildCollisionTimeline(job.Program!, controller.PlaybackMotions, job.Request!, job.Cancellation.Token,
+                (progress, message) => { lock (job.Gate) { job.Progress = .9f + progress * .1f; job.Message = message; } });
+            object result = MakeResult(job.Program!, controller, frames, 0, 0, watch.Elapsed.TotalSeconds, input.TorchDigitalOutput, out string summary);
             lock (job.Gate) { job.Result = result; job.Progress = 1; job.Message = summary; job.Status = "complete"; }
         }
         catch (OperationCanceledException) { lock (job.Gate) { job.Status = "cancelled"; job.Message = "Export cancelled or exceeded the 10-minute time limit."; } }
@@ -256,15 +266,18 @@ public partial class WebBridge : Node
         finally { Interlocked.Exchange(ref _activePlan, 0); }
     }
 
-    private static object MakeResult(WeldProgram program, RobotPostprocessorResult controller, double planningSeconds,
+    private static object MakeResult(WeldProgram program, RobotPostprocessorResult controller, CollisionFrame[][] frames, double planningSeconds,
         double weavingSeconds, double totalSeconds, int torchDigitalOutput, out string summary)
     {
         var playback = new WeldProgram { StartAngles = program.StartAngles, ToolTransform = program.ToolTransform, PartName = program.PartName };
         playback.Seams.AddRange(program.Seams); playback.Motions.AddRange(controller.PlaybackMotions);
-        using JsonDocument document = JsonDocument.Parse(playback.ToJson());
-        summary = $"{program.ReadyCount} ready / {program.BlockedCount} blocked · {controller.Primitives.Length} commands · {totalSeconds:0.0}s calculation";
-        return new { summary, readyCount = program.ReadyCount, blockedCount = program.BlockedCount,
-            durationSeconds = playback.DurationSeconds, program = document.RootElement.Clone(), csv = playback.ToCsv(),
+        JsonNode document = JsonNode.Parse(playback.ToJson())!;
+        JsonArray moves = document["moves"]!.AsArray();
+        for (int i = 0; i < moves.Count; i++) moves[i]!["collisionFrames"] = JsonSerializer.SerializeToNode(frames[i], JsonOptions);
+        document["collisionTimeline"] = "Precomputed for emitted playback joints; changes sampled at <=0.032 degrees summed joint travel and <=0.01 seconds nominal time. Identical contacts compressed. Clear validated paths require no duplicate check.";
+        summary = $"{program.ReadyCount} ready / {program.WarningCount} warning / {program.BlockedCount} blocked · {controller.Primitives.Length} commands · {totalSeconds:0.0}s calculation";
+        return new { summary, readyCount = program.ReadyCount, warningCount = program.WarningCount, blockedCount = program.BlockedCount,
+            durationSeconds = playback.DurationSeconds, program = document, csv = playback.ToCsv(),
             timing = new { planningSeconds, weavingSeconds, postprocessingSeconds = totalSeconds - planningSeconds - weavingSeconds, totalSeconds },
             controller = new { text = controller.Text, fileName = controller.FileName, metadata = controller.Metadata,
                 jointMoves = controller.JointMoves, linearMoves = controller.LinearMoves, circularMoves = controller.CircularMoves,
@@ -272,7 +285,49 @@ public partial class WebBridge : Node
                 primitives = controller.Primitives.Select(p => new { command = p.Command, sourceStart = p.SourceStart, sourceEnd = p.SourceEnd, arc = p.ArcOn, seam = p.SeamId, startJoints = p.StartJoints, endJoints = p.EndJoints, viaJoints = p.ViaJoints, speed = p.Speed, duration = p.DurationSeconds }) } };
     }
 
-    private CollisionScene MakeCollision(Prepared input) => new(input.Document.Indices.Select(i => input.PartTransform * input.Document.Vertices[i]).ToArray(), _capsules, staticTriangles: _fixtures);
+    internal sealed record CollisionFrame(float T, int[] Links, string[] Reasons);
+
+    /// <summary>Precompute contacts against the exact emitted joint path, removing round-trip latency during playback.</summary>
+    internal static CollisionFrame[][] BuildCollisionTimeline(WeldProgram program, IReadOnlyList<WeldMotion> motions,
+        WeldPlanRequest request, CancellationToken cancellation = default, Action<float, string>? progress = null)
+    {
+        var result = new CollisionFrame[motions.Count][];
+        var warned = program.Seams.Where(s => s.HasCollision).Select(s => s.Id).ToHashSet(StringComparer.Ordinal);
+        float[] previous = program.StartAngles;
+        for (int i = 0; i < motions.Count; i++)
+        {
+            cancellation.ThrowIfCancellationRequested();
+            WeldMotion motion = motions[i];
+            progress?.Invoke(i / (float)Math.Max(1, motions.Count), "Preparing collision playback " + motion.SeamId);
+            if (!warned.Contains(motion.SeamId))
+                result[i] = new[] { new CollisionFrame(0, Array.Empty<int>(), Array.Empty<string>()) };
+            else
+            {
+                float sum = 0;
+                for (int axis = 0; axis < 6; axis++) sum += Math.Abs(motion.TargetAngles[axis] - previous[axis]);
+                int steps = Math.Max(1, (int)Math.Ceiling(Math.Max(sum / .032f, motion.DurationSeconds / .01f)));
+                var frames = new List<CollisionFrame>();
+                var pose = new float[6];
+                for (int sample = 0; sample <= steps; sample++)
+                {
+                    if ((sample & 31) == 0) cancellation.ThrowIfCancellationRequested();
+                    float t = sample / (float)steps;
+                    for (int axis = 0; axis < 6; axis++) pose[axis] = Mathf.Lerp(previous[axis], motion.TargetAngles[axis], t);
+                    request.Collision.CheckDetailed(pose, out _, out CollisionContact[] contacts);
+                    int[] links = contacts.SelectMany(c => c.Links).Distinct().OrderBy(link => link).ToArray();
+                    string[] reasons = contacts.Select(c => c.Reason).Distinct(StringComparer.Ordinal).OrderBy(reason => reason, StringComparer.Ordinal).ToArray();
+                    if (frames.Count == 0 || !frames[^1].Links.SequenceEqual(links) || !frames[^1].Reasons.SequenceEqual(reasons))
+                        frames.Add(new CollisionFrame(t, links, reasons));
+                }
+                result[i] = frames.ToArray();
+            }
+            previous = motion.TargetAngles;
+        }
+        progress?.Invoke(1, "Collision playback ready");
+        return result;
+    }
+
+    private CollisionScene MakeCollision(Prepared input) => new(input.Document.Indices.Select(i => input.PartTransform * input.Document.Vertices[i]).ToArray(), _capsules, staticTriangles: _fixtures, robotTriangles: _robotTriangles);
 
     // Caller holds _collisionScenesGate. Cached scenes are immutable and checks use per-call scratch memory.
     private void PruneCollisionScenes()

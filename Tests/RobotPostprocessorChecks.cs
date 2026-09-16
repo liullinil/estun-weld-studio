@@ -44,6 +44,7 @@ public partial class RobotPostprocessorChecks : Node
             Require(!linearized.Text.Contains("setDO(1,"), "Configured torch output replaces every DO1 write");
             CheckPlayback(linearized, request);
             CheckWeaving(line, request, home);
+            CheckWarningPlayback(line, request, home);
 
             // A changing-orientation arc is not silently assigned undocumented controller orientation behavior.
             WeldProgram rotating = MakeProgram(request, t => new Transform3D(home.Basis * new Basis(Vector3.Up, t * .15f), Arc(t).Origin), 40);
@@ -125,6 +126,58 @@ public partial class RobotPostprocessorChecks : Node
         bool didCancel = false;
         try { WeavePlanner.Apply(line, request, options, cancelled.Token); } catch (OperationCanceledException) { didCancel = true; }
         Require(didCancel, "Weave calculation supports cancellation");
+    }
+
+    private void CheckWarningPlayback(WeldProgram line, WeldPlanRequest request, Transform3D home)
+    {
+        var warned = new WeldProgram { StartAngles = line.StartAngles, ToolTransform = line.ToolTransform };
+        warned.Motions.AddRange(line.Motions);
+        warned.Seams.Add(new PlannedSeam { Id = "test", State = WeldSeamState.Warning, HasCollision = true,
+            Partial = true, Length = .12f, ProcessedLength = .06f, Reason = "Torch / workpiece collision; partial seam",
+            WarningReasons = new[] { "Torch / workpiece collision", "partial seam" } });
+        var exported = RobotPostprocessor.Export(warned, request);
+        Require(exported.JointMoves == line.Motions.Count && exported.LinearMoves == 0 && exported.CircularMoves == 0,
+            "Warning path keeps source joint geometry instead of fitting a different Cartesian trajectory");
+        Require(exported.PlaybackMotions.SequenceEqual(warned.Motions), "Warning playback retains every original source motion");
+        Require(exported.Text.Contains("-- WARNING: Torch / workpiece collision") && exported.Text.Contains("Partial seam: 50%") && exported.Text.Contains("not collision-free"),
+            "Lua identifies collision components and partial coverage without claiming collision-free validation");
+
+        Vector3 centre = home.Origin + home.Basis.X * .03f;
+        Vector3[] obstacle = new BoxMesh { Size = Vector3.One * .003f }.GetFaces().Select(p => p + centre).ToArray();
+        var colliding = new WeldPlanRequest { ToolTransform = request.ToolTransform, AllowWarningPaths = true,
+            Collision = new CollisionScene(obstacle, new[] { new RobotCapsule(7, request.ToolTransform.Origin, request.ToolTransform.Origin, .000025f) }, floorY: -100, margin: 0) };
+        var frames = WebBridge.BuildCollisionTimeline(warned, exported.PlaybackMotions, colliding);
+        Require(frames.Length == exported.PlaybackMotions.Length && frames.All(f => f[0].T == 0), "Collision frames cover every emitted move from its initial pose");
+        Require(frames.SelectMany(f => f).Any(f => f.Links.Contains(7) && f.Reasons.Any(r => r.Contains("workpiece"))), "Precomputed playback identifies the torch and workpiece contact");
+        Require(frames[^1][^1].Links.Length == 0, "Playback collision schedule clears the robot after leaving the obstacle");
+        Require(frames.SelectMany(f => f).Count() < 2 * exported.PlaybackMotions.Length, "Collision schedule compresses unchanged contact states");
+        float[] from = line.StartAngles;
+        for (int index = 0; index < exported.PlaybackMotions.Length; index++)
+        {
+            foreach (var frame in frames[index])
+            {
+                float[] q = Enumerable.Range(0, 6).Select(axis => Mathf.Lerp(from[axis], exported.PlaybackMotions[index].TargetAngles[axis], frame.T)).ToArray();
+                colliding.Collision.CheckDetailed(q, out _, out CollisionContact[] contacts);
+                Require(frame.Links.SequenceEqual(contacts.SelectMany(c => c.Links).Distinct().OrderBy(x => x)), "Playback contact changes match the detailed native check at their exact pose");
+            }
+            from = exported.PlaybackMotions[index].TargetAngles;
+        }
+        var weaving = new WeavingOptions { Enabled = true, AmplitudeMm = 2, FrequencyHz = 2, FadeMm = 2 };
+        WeldProgram woven = WeavePlanner.Apply(warned, colliding, weaving);
+        Require(woven.Motions.Count > warned.Motions.Count && woven.Seams[0].State == WeldSeamState.Warning && woven.Seams[0].HasCollision,
+            "Web warning mode retains woven collision paths for simulation");
+        Require(warned.Seams[0].WarningReasons.Length == 2, "Weaving warning annotations do not mutate the input program");
+
+        var fast = new WeavingOptions { Enabled = true, AmplitudeMm = 10, FrequencyHz = 5, FadeMm = 2 };
+        var fastSource = new WeldProgram { StartAngles = warned.StartAngles, ToolTransform = warned.ToolTransform };
+        fastSource.Seams.AddRange(warned.Seams);
+        fastSource.Motions.AddRange(warned.Motions.Select(m => new WeldMotion { TargetAngles = m.TargetAngles, Tcp = m.Tcp,
+            WeldPoint = m.WeldPoint, WorldApproach = m.WorldApproach, ArcOn = m.ArcOn, SeamId = m.SeamId, DurationSeconds = .0002f }));
+        WeldProgram partial = WeavePlanner.Apply(fastSource, colliding, fast);
+        Require(partial.Seams[0].Partial && partial.Seams[0].ProcessedLength < warned.Seams[0].ProcessedLength,
+            "Infeasible weave retains only its feasible prefix and reports reduced coverage");
+        Require(!partial.Motions[^1].ArcOn && partial.Motions[^1].TargetAngles.SequenceEqual(warned.Motions[^1].TargetAngles),
+            "Truncated weaving reaches the original run end with the torch off before continuing the job");
     }
 
     private async System.Threading.Tasks.Task CheckActualBracket()

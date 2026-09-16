@@ -36,7 +36,12 @@ public static class WeavePlanner
         cancellation.ThrowIfCancellationRequested();
         if (!settings.Enabled) return source;
         var output = new WeldProgram { StartAngles = source.StartAngles, ToolTransform = source.ToolTransform, PartName = source.PartName };
-        output.Seams.AddRange(source.Seams);
+        output.Seams.AddRange(source.Seams.Select(s => new PlannedSeam
+        {
+            Id = s.Id, Points = s.Points, State = s.State, Reason = s.Reason, Reversed = s.Reversed,
+            Length = s.Length, Order = s.Order, HasCollision = s.HasCollision, Partial = s.Partial,
+            ProcessedLength = s.ProcessedLength, WarningReasons = (string[])s.WarningReasons.Clone()
+        }));
         for (int start = 0; start < source.Motions.Count;)
         {
             cancellation.ThrowIfCancellationRequested();
@@ -45,15 +50,15 @@ public static class WeavePlanner
             int end = start;
             while (end + 1 < source.Motions.Count && source.Motions[end + 1].ArcOn && source.Motions[end + 1].SeamId == first.SeamId) end++;
             progress?.Invoke(start / (float)Math.Max(1, source.Motions.Count), "Validating weave on " + first.SeamId);
-            ApplyRun(source, start, end, request, settings, output.Motions, cancellation);
+            ApplyRun(source, start, end, request, settings, output, cancellation);
             start = end + 1;
         }
-        progress?.Invoke(1, "Woven path validated");
+        progress?.Invoke(1, output.WarningCount > 0 ? "Woven path ready with warnings" : "Woven path validated");
         return output;
     }
 
     private static void ApplyRun(WeldProgram source, int start, int end, WeldPlanRequest request, WeavingOptions settings,
-        List<WeldMotion> output, CancellationToken cancellation)
+        WeldProgram output, CancellationToken cancellation)
     {
         int count = end - start + 1;
         var joints = new float[count + 1][];
@@ -98,6 +103,39 @@ public static class WeavePlanner
         var sampleTimes = Enumerable.Range(1, steps).Select(i => duration * i / steps).Concat(times.Skip(1)).Distinct().OrderBy(t => t).ToList();
         float previousTime = 0;
         float[] previous = joints[0];
+        PlannedSeam? planned = output.Seams.FirstOrDefault(s => s.Id == source.Motions[start].SeamId);
+        void Warn(string reason, bool collision = false)
+        {
+            if (planned == null) return;
+            planned.State = WeldSeamState.Warning;
+            planned.HasCollision |= collision;
+            planned.WarningReasons = planned.WarningReasons.Append(reason).Distinct(StringComparer.Ordinal).ToArray();
+            planned.Reason = string.Join("; ", planned.WarningReasons);
+        }
+        void StopRun(string reason, float time)
+        {
+            if (!request.AllowWarningPaths) throw Failure(source, start, time / duration, reason);
+            int found = Array.BinarySearch(times, previousTime);
+            int segment = Math.Clamp(found >= 0 ? found : ~found - 1, 0, count - 1);
+            float covered = Mathf.Lerp(distances[segment], distances[segment + 1],
+                Mathf.Clamp((previousTime - times[segment]) / (times[segment + 1] - times[segment]), 0, 1));
+            if (planned != null)
+            {
+                planned.Partial = true;
+                planned.ProcessedLength = (planned.ProcessedLength > 0 ? planned.ProcessedLength : planned.Length) * covered / length;
+            }
+            Warn($"Weaving stopped at {covered / length * 100:0.#}%: {reason}");
+            // Continue the rest of the job with the torch off. The original run end is reachable;
+            // joint interpolation preserves joint limits and its collisions are reported explicitly.
+            if (previous.SequenceEqual(joints[^1])) return;
+            if (!request.Collision.CheckMotion(previous, joints[^1], out string transferCollision, cancellation))
+                Warn("Torch-off transfer after partial weaving: " + transferCollision, true);
+            float transferDuration = .02f;
+            for (int axis = 0; axis < 6; axis++) transferDuration = Math.Max(transferDuration, Math.Abs(joints[^1][axis] - previous[axis]) / JointSpeeds[axis]);
+            Transform3D transferTcp = poses[^1];
+            output.Motions.Add(new WeldMotion { TargetAngles = joints[^1], Tcp = transferTcp, WeldPoint = transferTcp.Origin,
+                WorldApproach = transferTcp.Basis.Y, ArcOn = false, SeamId = source.Motions[start].SeamId, DurationSeconds = transferDuration });
+        }
         for (int i = 0; i < sampleTimes.Count; i++)
         {
             cancellation.ThrowIfCancellationRequested();
@@ -109,7 +147,7 @@ public static class WeavePlanner
             else
             {
                 var solve = RobotKinematics.Solve(desired, previous, request.JointRest, request.ToolTransform, .00001f, .0001f);
-                if (!solve.Success) throw Failure(source, start, time / duration, "no continuous inverse kinematics solution");
+                if (!solve.Success) { StopRun("no continuous inverse kinematics solution", time); return; }
                 q = solve.AnglesDegrees;
             }
             bool accurate = true;
@@ -121,15 +159,19 @@ public static class WeavePlanner
             }
             if (!accurate)
             {
-                if (time - previousTime < .00001f || sampleTimes.Count >= 50000) throw Failure(source, start, time / duration, "sampling tolerance cannot be met");
+                if (time - previousTime < .00001f || sampleTimes.Count >= 50000) { StopRun("sampling tolerance cannot be met", time); return; }
                 sampleTimes.Insert(i, (previousTime + time) * .5f); i--; continue;
             }
             for (int axis = 0; axis < 6; axis++)
                 if (Math.Abs(q[axis] - previous[axis]) / (time - previousTime) > JointSpeeds[axis] * 1.001f)
-                    throw Failure(source, start, time / duration, "joint speed limit; reduce weave amplitude or frequency");
-            if (!request.Collision.CheckMotion(previous, q, out string collision, cancellation)) throw Failure(source, start, time / duration, collision);
+                { StopRun("joint speed limit; reduce weave amplitude or frequency", time); return; }
+            if (!request.Collision.CheckMotion(previous, q, out string collision, cancellation))
+            {
+                if (!request.AllowWarningPaths) throw Failure(source, start, time / duration, collision);
+                Warn("Weaving: " + collision, true);
+            }
             Transform3D tcp = RobotKinematics.Forward(q, request.JointRest, request.ToolTransform);
-            output.Add(new WeldMotion { TargetAngles = q, Tcp = tcp, WeldPoint = tcp.Origin - tcp.Basis.Y * request.ArcGap,
+            output.Motions.Add(new WeldMotion { TargetAngles = q, Tcp = tcp, WeldPoint = tcp.Origin - tcp.Basis.Y * request.ArcGap,
                 WorldApproach = tcp.Basis.Y, ArcOn = true, SeamId = source.Motions[start].SeamId, DurationSeconds = time - previousTime });
             previous = q; previousTime = time;
         }

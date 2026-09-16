@@ -111,17 +111,21 @@ public static class RobotPostprocessor
         }
         var primitives = new List<RobotProgramPrimitive>();
         var playback = new List<WeldMotion>();
+        // Warning paths must preserve exactly the joint interpolation reviewed in the simulator.
+        // A fitted Cartesian replacement would be a different, unreviewed collision trajectory.
+        var warningSeams = program.Seams.Where(s => s.State == WeldSeamState.Warning).Select(s => s.Id).ToHashSet(StringComparer.Ordinal);
         for (int i = 0; i < program.Motions.Count;)
         {
             cancellation.ThrowIfCancellationRequested();
             progress?.Invoke(i / (float)Math.Max(1, program.Motions.Count), "Optimizing and validating controller path");
             WeldMotion source = program.Motions[i];
+            bool preserveWarningPath = warningSeams.Contains(source.SeamId);
             int runEnd = i;
             // Retain the exact original joint transfer geometry. Compress only welding runs.
-            if (source.ArcOn && !options.Weaving.Enabled)
+            if (source.ArcOn && !options.Weaving.Enabled && !preserveWarningPath)
                 while (runEnd + 1 < program.Motions.Count && program.Motions[runEnd + 1].ArcOn && program.Motions[runEnd + 1].SeamId == source.SeamId) runEnd++;
             RobotProgramPrimitive? primitive = null;
-            for (int end = runEnd; source.ArcOn && end >= i; end = end == i ? i - 1 : i + (end - i - 1) / 2)
+            for (int end = runEnd; source.ArcOn && !preserveWarningPath && end >= i; end = end == i ? i - 1 : i + (end - i - 1) / 2)
             {
                 cancellation.ThrowIfCancellationRequested();
                 Curve? curve = Fit(program, poses, i, end, false, request, options, cancellation, out List<Sample> reference);
@@ -153,10 +157,11 @@ public static class RobotPostprocessor
             modelFrame = "Robot base, right handed, Y up, metres. CAD-to-model (x,y,z)=(CAD y,CAD z,CAD x).",
             tool = options.Tool, coordinateSystem = options.CoordinateSystem, torchDigitalOutput = options.TorchDigitalOutput,
             linearizeArcs = options.LinearizeArcs, weaving = options.Weaving,
-            weavingImplementation = options.Weaving.Enabled ? "Explicit sinusoidal path sampled in native planner and exported as validated movL/movJ. Amplitude is one-sided millimetres; frequency is nominal Hz; angle rotates the tool/travel lateral plane; endpoint fade is smoothstep in millimetres. Controller movLW/movCW waveform/frame are unspecified in the supplied manual and are not inferred." : "Disabled",
+            weavingImplementation = options.Weaving.Enabled ? "Explicit sinusoidal path sampled in native planner and exported as movL/movJ with IK and collision checking; reported warning collisions remain in the output. Amplitude is one-sided millimetres; frequency is nominal Hz; angle rotates the tool/travel lateral plane; endpoint fade is smoothstep in millimetres. Controller movLW/movCW waveform/frame are unspecified in the supplied manual and are not inferred." : "Disabled",
             positionToleranceMm = options.PositionToleranceMetres * 1000,
             orientationToleranceDegrees = Mathf.RadToDeg(options.OrientationToleranceRadians),
-            validation = "Original joint transfers retained. Cartesian primitives fitted against densely sampled source FK; new IK path and every playback joint segment collision checked. Sampled offline geometry only.",
+            validation = "Original joint transfers retained. Cartesian primitives fitted against densely sampled source FK and checked for collision. Warning seams retain the original joint trajectory, including explicitly reported collisions and partial coverage; they are not collision-free. Sampled offline geometry only.",
+            warningSeams = program.Seams.Where(s => s.State == WeldSeamState.Warning).Select(s => new { id = s.Id, reason = s.Reason, hasCollision = s.HasCollision, partial = s.Partial, coverage = s.Coverage }),
             orientation = "Only approximately constant tool orientation is compressed; the supplied manual does not specify general movC orientation interpolation.",
             controllerRequirements = "Controller must implement the supplied CODROID Lua dialect, ESTUN S20-180 Pro model and matching joint zeros/directions, tool, base/workpiece calibration. No controller calibration is inferred or overwritten.",
             timing = "Nominal feed from planned duration; controller acceleration and exact-stop timing may differ from simulation.",
@@ -297,7 +302,9 @@ public static class RobotPostprocessor
         text.AppendLine($"-- Uses existing tool={options.Tool}, coor={options.CoordinateSystem}; does not overwrite calibration.");
         text.AppendLine("-- Simulator frame: robot base, right handed, Y up, metres; jp avoids Euler assumptions.");
         text.AppendLine($"-- Cartesian fit tolerance: {Number(options.PositionToleranceMetres * 1000)} mm; orientation: {Number(Mathf.RadToDeg(options.OrientationToleranceRadians))} deg.");
-        text.AppendLine("-- L/C: independently sampled IK/collision validation. Other source paths retain movJ.");
+        text.AppendLine("-- L/C: independently sampled IK/collision validation. Warning/source paths retain movJ.");
+        if (program.WarningCount > 0)
+            text.AppendLine($"-- WARNING: {program.WarningCount} seam(s) contain reported collisions or only partial coverage. See per-seam comments.");
         text.AppendLine("-- Offline sampled validation; controller dynamics and cycle time require commissioning.");
         if (options.Weaving.Enabled)
             text.AppendLine($"-- Explicit sinusoidal weave: amplitude={Number(options.Weaving.AmplitudeMm)} mm, frequency={Number(options.Weaving.FrequencyHz)} Hz, angle={Number(options.Weaving.AngleDegrees)} deg, fade={Number(options.Weaving.FadeMm)} mm. Native IK/collision checked.");
@@ -306,7 +313,7 @@ public static class RobotPostprocessor
         text.AppendLine("local actualStart = getJoint()");
         text.AppendLine("for axis=1,6 do");
         text.AppendLine("  if math.abs(actualStart.jp[axis]-expectedStart[axis]) > 0.2 then");
-        text.AppendLine("    print(\"Start joints differ from the validated program; reposition and regenerate\")");
+        text.AppendLine("    print(\"Start joints differ from the calculated program; reposition and regenerate\")");
         text.AppendLine("    stopProject()");
         text.AppendLine("    return");
         text.AppendLine("  end");
@@ -316,7 +323,17 @@ public static class RobotPostprocessor
         string seam = "";
         foreach (RobotProgramPrimitive p in primitives)
         {
-            if (p.SeamId != seam) { seam = p.SeamId; text.Append("-- Seam: ").AppendLine(seam.Replace('\r', ' ').Replace('\n', ' ')); }
+            if (p.SeamId != seam)
+            {
+                seam = p.SeamId; text.Append("-- Seam: ").AppendLine(seam.Replace('\r', ' ').Replace('\n', ' '));
+                PlannedSeam? planned = program.Seams.FirstOrDefault(s => s.Id == seam);
+                if (planned?.State == WeldSeamState.Warning)
+                {
+                    text.Append("-- WARNING: ").AppendLine(planned.Reason.Replace('\r', ' ').Replace('\n', ' '));
+                    if (planned.Partial) text.AppendLine($"-- Partial seam: {Number(planned.Coverage * 100)}% processed; unavailable remainder is omitted.");
+                    if (planned.HasCollision) text.AppendLine("-- Collision path retained for review; this segment is not collision-free.");
+                }
+            }
             if (p.ArcOn != torch) { torch = p.ArcOn; text.AppendLine($"setDO({options.TorchDigitalOutput},{(torch ? 1 : 0)})"); }
             text.Append(p.Command).Append('(');
             if (p.ViaJoints != null) text.Append(JointTarget(p.ViaJoints)).Append(',');

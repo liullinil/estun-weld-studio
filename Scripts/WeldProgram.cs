@@ -23,9 +23,11 @@ public sealed class WeldPlanRequest
     public float WeldSpeed { get; init; } = .025f;
     public float TravelSpeed { get; init; } = .22f;
     public string PartName { get; init; } = "Workpiece";
+    /// <summary>Preview reachable warning paths even when they collide; strict planning remains the default.</summary>
+    public bool AllowWarningPaths { get; init; }
 }
 
-public enum WeldSeamState { Ready, Unreachable, Collision, TransferBlocked, Deleted }
+public enum WeldSeamState { Ready, Unreachable, Collision, TransferBlocked, Deleted, Warning }
 
 public sealed class PlannedSeam
 {
@@ -36,9 +38,14 @@ public sealed class PlannedSeam
     public bool Reversed { get; set; }
     public float Length { get; set; }
     public int Order { get; set; } = -1;
+    public bool HasCollision { get; set; }
+    public bool Partial { get; set; }
+    public float ProcessedLength { get; set; }
+    public float Coverage => Length > 0 ? Math.Clamp(ProcessedLength / Length, 0, 1) : 0;
+    public string[] WarningReasons { get; set; } = Array.Empty<string>();
 }
 
-/// <summary>Each target follows a validated, densely sampled joint interpolation from the preceding target.</summary>
+/// <summary>Joint interpolation target; collision-preview paths are explicitly marked on their seam.</summary>
 public sealed class WeldMotion
 {
     public float[] TargetAngles { get; init; } = new float[6];
@@ -61,9 +68,10 @@ public sealed class WeldProgram
     public DateTime CreatedUtc { get; } = DateTime.UtcNow;
     public string Method => "Nearest endpoint + 2-opt; multi-orientation IK; sampled collision validation with CAD slab bounds and torch capsules";
     public int ReadyCount => Seams.Count(s => s.State == WeldSeamState.Ready);
-    public int BlockedCount => Seams.Count(s => s.State != WeldSeamState.Ready && s.State != WeldSeamState.Deleted);
+    public int WarningCount => Seams.Count(s => s.State == WeldSeamState.Warning);
+    public int BlockedCount => Seams.Count(s => s.State != WeldSeamState.Ready && s.State != WeldSeamState.Deleted && s.State != WeldSeamState.Warning);
     public float DurationSeconds => Motions.Sum(m => m.DurationSeconds);
-    public string Summary => $"{ReadyCount} ready / {BlockedCount} blocked · {Motions.Count} moves · {DurationSeconds:0}s";
+    public string Summary => $"{ReadyCount} ready / {WarningCount} warnings / {BlockedCount} blocked · {Motions.Count} moves · {DurationSeconds:0}s";
 
     public string ToJson() => JsonSerializer.Serialize(new
     {
@@ -71,9 +79,10 @@ public sealed class WeldProgram
         robot = "ESTUN S20-180 Pro / ENCY", part = PartName, createdUtc = CreatedUtc,
         units = new { position = "metre", joints = "degree", time = "second" },
         coordinateFrame = "robot base; right handed; Y up", method = Method,
-        validation = "Offline geometric simulation. Source-mesh oriented slab bounds, torch capsules and tessellated CAD; sampled motion. Requires calibrated cell and controller postprocessing before hardware use.",
+        validation = WarningCount > 0 ? "Offline preview contains warning paths: collision freedom and complete seam coverage are not guaranteed. Inspect seam warnings before controller use." : "Offline geometric simulation. Source-mesh oriented slab bounds, torch capsules and tessellated CAD; sampled motion. Requires calibrated cell and controller postprocessing before hardware use.",
         tool = Pose(ToolTransform), startJoints = StartAngles,
-        seams = Seams.Select(s => new { id = s.Id, state = s.State.ToString(), s.Reason, s.Order, s.Reversed, length = s.Length }),
+        seams = Seams.Select(s => new { id = s.Id, state = s.State.ToString(), s.Reason, s.Order, s.Reversed, length = s.Length,
+            hasCollision = s.HasCollision, partial = s.Partial, processedLength = s.ProcessedLength, coverage = s.Coverage, warningReasons = s.WarningReasons }),
         moves = Motions.Select((m, i) => new { index = i + 1, type = m.Kind, seam = m.SeamId, joints = m.TargetAngles, tcp = Pose(m.Tcp), arc = m.ArcOn, duration = m.DurationSeconds })
     }, new JsonSerializerOptions { WriteIndented = true });
 
