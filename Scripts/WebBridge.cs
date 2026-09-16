@@ -1,0 +1,341 @@
+using Godot;
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Text;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace EstunStudio;
+
+/// <summary>
+/// Optional headless HTTP adapter around the unchanged desktop kinematics and planner.
+/// Start res://Tests/WebBridge.tscn. A trusted web gateway supplies the original CAD
+/// worker document. This scene is never instantiated by the desktop application.
+/// </summary>
+public partial class WebBridge : Node
+{
+    private const int MaximumBodyBytes = 64 * 1024 * 1024;
+    private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+    private readonly CancellationTokenSource _shutdown = new();
+    private readonly ConcurrentDictionary<string, Job> _jobs = new();
+    private readonly SemaphoreSlim _httpSlots = new(4);
+    private HttpListener? _listener;
+    private RobotCapsule[] _capsules = Array.Empty<RobotCapsule>();
+    private Vector3[] _fixtures = Array.Empty<Vector3>();
+    private int _activePlan;
+
+    private sealed class Job
+    {
+        public readonly object Gate = new();
+        public readonly string Id = Guid.NewGuid().ToString("N");
+        public readonly DateTime CreatedUtc = DateTime.UtcNow;
+        public required CancellationTokenSource Cancellation;
+        public string Status = "running", Message = "Building collision scene", Error = "";
+        public float Progress;
+        public object? Result;
+        public object Snapshot()
+        {
+            lock (Gate) return new { jobId = Id, status = Status, progress = Progress, message = Message, createdUtc = CreatedUtc, result = Result, error = Error };
+        }
+    }
+
+    public override async void _Ready()
+    {
+        try
+        {
+            // CylinderMesh is created on the scene thread; planning thereafter is pure math.
+            _fixtures = new CylinderMesh { TopRadius = .70f, BottomRadius = .70f, Height = .201f, RadialSegments = 64 }
+                .GetFaces().Select(p => p + new Vector3(0, -.1095f, 0)).ToArray();
+            string meshPath = ProjectSettings.GlobalizePath(RobotModel.MeshPath);
+            _capsules = await Task.Run(() => CollisionScene.CreateRobotCapsules(ReadSource(meshPath)).Concat(WeldTorch.CollisionVolumes()).ToArray());
+            string bind = System.Environment.GetEnvironmentVariable("ESTUN_BRIDGE_BIND") ?? "127.0.0.1";
+            if (bind == "0.0.0.0") bind = "+";
+            if (bind != "+" && bind != "localhost" && !IPAddress.TryParse(bind, out _)) throw new ArgumentException("Invalid ESTUN_BRIDGE_BIND host.");
+            int port = int.TryParse(System.Environment.GetEnvironmentVariable("ESTUN_BRIDGE_PORT"), out int configuredPort) ? configuredPort : 18741;
+            if (port < 1024 || port > 65535) throw new ArgumentException("Invalid ESTUN_BRIDGE_PORT.");
+            _listener = new HttpListener();
+            _listener.Prefixes.Add($"http://{bind}:{port}/");
+            _listener.Start();
+            GD.Print($"ESTUN_WEB_BRIDGE_READY port={port} capsules={_capsules.Length}");
+            _ = AcceptAsync();
+        }
+        catch (Exception exception) { GD.PrintErr("Web bridge startup failed: " + exception); GetTree().Quit(1); }
+    }
+
+    public override void _ExitTree()
+    {
+        _shutdown.Cancel();
+        _listener?.Close();
+        foreach (Job job in _jobs.Values) { lock (job.Gate) { if (job.Status == "running") job.Cancellation.Cancel(); } }
+    }
+
+    private async Task AcceptAsync()
+    {
+        while (!_shutdown.IsCancellationRequested && _listener is { IsListening: true })
+        {
+            HttpListenerContext context;
+            try { context = await _listener.GetContextAsync(); }
+            catch (Exception) when (_shutdown.IsCancellationRequested || _listener is not { IsListening: true }) { return; }
+            _ = Task.Run(async () =>
+            {
+                if (!await _httpSlots.WaitAsync(0)) { await Reply(context, 429, new { error = "Too many concurrent requests." }); return; }
+                try { await DispatchAsync(context); }
+                catch (Exception exception)
+                {
+                    int status = exception is InvalidDataException or JsonException or ArgumentException ? 400 : exception is OperationCanceledException ? 408 : 500;
+                    try { await Reply(context, status, new { error = status == 500 ? "Native bridge request failed." : exception.Message }); } catch (Exception) { }
+                    if (status == 500) GD.PrintErr(exception);
+                }
+                finally { _httpSlots.Release(); context.Response.Close(); }
+            });
+        }
+    }
+
+    private async Task DispatchAsync(HttpListenerContext context)
+    {
+        PruneJobs();
+        string path = context.Request.Url?.AbsolutePath.TrimEnd('/') ?? "";
+        string method = context.Request.HttpMethod;
+        if (method == "GET" && path == "/health")
+        {
+            await Reply(context, 200, new
+            {
+                status = "ok", engine = "Godot 4.5.1 .NET / original ESTUN desktop planner", version = 1,
+                busy = Volatile.Read(ref _activePlan) != 0, capsuleCount = _capsules.Length,
+                maximumBodyBytes = MaximumBodyBytes, coordinates = "robot base; right handed; Y up; metres; degrees",
+                homeAngles = RobotController.HomeAngles, jointMinimum = RobotController.JointMinimum, jointMaximum = RobotController.JointMaximum,
+                jointRest = RobotKinematics.StandardRestTransforms().Select(Pose), tool = Pose(WeldTorch.ToolTransform),
+                collision = new { margin = .002, maximumSummedJointStepDegrees = .032, floorY = -.22, nativeRobotAndTorch = true, nativePlinth = true }
+            });
+            return;
+        }
+        if (path.StartsWith("/jobs/", StringComparison.Ordinal) && (method == "GET" || method == "DELETE"))
+        {
+            string id = path[6..];
+            if (!_jobs.TryGetValue(id, out Job? job)) { await Reply(context, 404, new { error = "Unknown or expired job." }); return; }
+            if (method == "DELETE") { lock (job.Gate) { if (job.Status == "running") { job.Message = "Cancellation requested"; job.Cancellation.Cancel(); } } }
+            await Reply(context, 200, job.Snapshot());
+            return;
+        }
+        if (path == "/plan" && method == "POST")
+        {
+            if (Interlocked.CompareExchange(ref _activePlan, 1, 0) != 0)
+            { await Reply(context, 429, new { error = "The native planner is busy. Wait for the current job or cancel it." }); return; }
+            bool scheduled = false;
+            try
+            {
+                BridgeRequest input = await ReadRequest(context.Request);
+                Prepared prepared = Prepare(input);
+                var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token);
+                cancellation.CancelAfter(TimeSpan.FromMinutes(10));
+                var job = new Job { Cancellation = cancellation };
+                _jobs[job.Id] = job;
+                _ = Task.Run(() => RunPlan(job, prepared));
+                scheduled = true;
+                await Reply(context, 202, new { jobId = job.Id, status = "running", poll = "/jobs/" + job.Id });
+            }
+            finally { if (!scheduled) Interlocked.Exchange(ref _activePlan, 0); }
+            return;
+        }
+        if (path == "/check" && method == "POST")
+        {
+            BridgeRequest input = await ReadRequest(context.Request);
+            Prepared prepared = Prepare(input);
+            CollisionScene collision = MakeCollision(prepared);
+            bool clear = collision.Check(prepared.StartAngles, out string reason);
+            await Reply(context, 200, new { clear, reason, angles = prepared.StartAngles, tcp = Pose(RobotKinematics.Forward(prepared.StartAngles, RobotKinematics.StandardRestTransforms(), WeldTorch.ToolTransform)), validation = "Offline geometric pose check using the original desktop collision model." });
+            return;
+        }
+        await Reply(context, 404, new { error = "Unknown bridge route." });
+    }
+
+    private void RunPlan(Job job, Prepared input)
+    {
+        try
+        {
+            job.Cancellation.Token.ThrowIfCancellationRequested();
+            CollisionScene collision = MakeCollision(input);
+            WeldProgram program = WeldPlanner.Plan(new WeldPlanRequest
+            {
+                Seams = input.Seams, PartTransform = input.PartTransform, StartAngles = input.StartAngles,
+                ToolTransform = WeldTorch.ToolTransform, Collision = collision, PartName = input.Name
+            }, job.Cancellation.Token, (progress, message) => { lock (job.Gate) { job.Progress = progress; job.Message = message; } });
+            using JsonDocument document = JsonDocument.Parse(program.ToJson());
+            object result = new { summary = program.Summary, readyCount = program.ReadyCount, blockedCount = program.BlockedCount,
+                durationSeconds = program.DurationSeconds, program = document.RootElement.Clone(), csv = program.ToCsv() };
+            lock (job.Gate) { job.Result = result; job.Progress = 1; job.Message = program.Summary; job.Status = "complete"; }
+        }
+        catch (OperationCanceledException) { lock (job.Gate) { job.Status = "cancelled"; job.Message = "Planning cancelled or exceeded the 10-minute time limit."; } }
+        catch (Exception exception) { lock (job.Gate) { job.Status = "failed"; job.Error = exception.Message; job.Message = "Planning failed"; } GD.PrintErr(exception); }
+        finally { Interlocked.Exchange(ref _activePlan, 0); }
+    }
+
+    private CollisionScene MakeCollision(Prepared input) => new(input.Document.Indices.Select(i => input.PartTransform * input.Document.Vertices[i]).ToArray(), _capsules, staticTriangles: _fixtures);
+
+    private void PruneJobs()
+    {
+        foreach (Job job in _jobs.Values.OrderBy(j => j.CreatedUtc))
+        {
+            lock (job.Gate)
+            {
+                if (job.Status == "running" || (_jobs.Count < 16 && DateTime.UtcNow - job.CreatedUtc < TimeSpan.FromMinutes(30))) continue;
+                if (_jobs.TryRemove(job.Id, out _)) job.Cancellation.Dispose();
+            }
+        }
+    }
+
+    private static async Task<BridgeRequest> ReadRequest(HttpListenerRequest request)
+    {
+        if (request.ContentLength64 > MaximumBodyBytes) throw new InvalidDataException("JSON body exceeds the 64 MB bridge limit.");
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var bytes = new MemoryStream();
+        byte[] buffer = new byte[65536];
+        int count;
+        while ((count = await request.InputStream.ReadAsync(buffer, timeout.Token)) > 0)
+        {
+            if (bytes.Length + count > MaximumBodyBytes) throw new InvalidDataException("JSON body exceeds the 64 MB bridge limit.");
+            bytes.Write(buffer, 0, count);
+        }
+        bytes.Position = 0;
+        return await JsonSerializer.DeserializeAsync<BridgeRequest>(bytes, JsonOptions, timeout.Token) ?? throw new InvalidDataException("Empty JSON request.");
+    }
+
+    private static async Task Reply(HttpListenerContext context, int status, object body)
+    {
+        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(body, JsonOptions);
+        context.Response.StatusCode = status;
+        context.Response.ContentType = "application/json; charset=utf-8";
+        context.Response.Headers["Cache-Control"] = "no-store";
+        context.Response.ContentLength64 = bytes.Length;
+        await context.Response.OutputStream.WriteAsync(bytes);
+        context.Response.Close();
+    }
+
+    private sealed record Prepared(CadDocument Document, CadSeam[] Seams, Transform3D PartTransform, float[] StartAngles, string Name);
+
+    private static Prepared Prepare(BridgeRequest input)
+    {
+        WorkerDocument raw = input.Document ?? throw new InvalidDataException("document is required (the original CAD worker JSON).");
+        Vector3[] vertices = Vectors(raw.Vertices, "vertices"), normals = Vectors(raw.Normals, "normals");
+        if (vertices.Length < 3 || normals.Length != vertices.Length || raw.Indices == null || raw.Indices.Length < 3 || raw.Indices.Length % 3 != 0 || raw.Indices.Any(i => i < 0 || i >= vertices.Length))
+            throw new InvalidDataException("Invalid CAD triangle mesh.");
+        if (vertices.Any(v => v.LengthSquared() > 1_000_000)) throw new InvalidDataException("CAD coordinates exceed the supported 1000 metre workspace.");
+        Aabb bounds = new(vertices[0], Vector3.Zero);
+        foreach (Vector3 vertex in vertices) bounds = bounds.Expand(vertex);
+        string name = string.IsNullOrWhiteSpace(input.PartName) ? "CAD workpiece" : input.PartName[..Math.Min(input.PartName.Length, 256)];
+        var document = new CadDocument { Name = name, Vertices = vertices, Normals = normals, Indices = raw.Indices, Bounds = bounds };
+        if (raw.Seams == null || raw.Seams.Length > 20000) throw new InvalidDataException("Invalid CAD seam count.");
+        var deleted = new HashSet<string>(input.DeletedSeamIds ?? Array.Empty<string>(), StringComparer.Ordinal);
+        int seamPointCount = 0;
+        var knownIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (WorkerSeam source in raw.Seams)
+        {
+            if (source == null || string.IsNullOrEmpty(source.Id) || source.Id.Length > 256 || !knownIds.Add(source.Id)) throw new InvalidDataException("Invalid or duplicate seam id.");
+            Vector3[] points = Vectors(source.Points, "seam points"), a = Vectors(source.NormalsA, "seam normalsA"), b = Vectors(source.NormalsB, "seam normalsB");
+            seamPointCount += points.Length;
+            if (seamPointCount > 250000 || points.Any(p => p.LengthSquared() > 1_000_000)) throw new InvalidDataException("CAD seam sampling or coordinate limit exceeded.");
+            if (a.Any(n => n.LengthSquared() > 4) || b.Any(n => n.LengthSquared() > 4)) throw new InvalidDataException("Invalid CAD seam normals.");
+            if (points.Length < 2 || !float.IsFinite(source.AngleDegrees) || !float.IsFinite(source.MinAngleDegrees) || !float.IsFinite(source.MaxAngleDegrees)) continue;
+            var seam = new CadSeam { Id = source.Id, Kind = source.Kind ?? "Topology edge", Points = points, NormalsA = a, NormalsB = b,
+                NormalA = a.Length > 0 ? a[a.Length / 2] : Vector3.Up, NormalB = b.Length > 0 ? b[b.Length / 2] : Vector3.Right,
+                AngleDegrees = source.AngleDegrees, MinAngleDegrees = source.MinAngleDegrees, MaxAngleDegrees = source.MaxAngleDegrees,
+                Concave = source.Concave, Deleted = deleted.Contains(source.Id) };
+            if (seam.Length > 100) throw new InvalidDataException("A seam exceeds the 100 metre planning limit.");
+            if (seam.Length >= .0005f) document.Seams.Add(seam);
+        }
+        if (!float.IsFinite(input.MinimumAngle) || !float.IsFinite(input.MaximumAngle) || input.MinimumAngle < 0 || input.MaximumAngle > 180 || input.MinimumAngle > input.MaximumAngle)
+            throw new InvalidDataException("Invalid seam angle range.");
+        HashSet<string>? included = input.SeamIds == null ? null : new HashSet<string>(input.SeamIds, StringComparer.Ordinal);
+        CadSeam[] seams = document.Seams.Where(s => !s.Deleted && (included != null ? included.Contains(s.Id) : s.MatchesAngleRange(input.MinimumAngle, input.MaximumAngle) && (!input.ConcaveOnly || s.Concave || s.Kind.Contains("contact", StringComparison.OrdinalIgnoreCase)))).ToArray();
+        if (seams.Length > 256) throw new InvalidDataException("Select at most 256 seam candidates per plan.");
+        Transform3D placement;
+        if (input.PartTransform == null)
+            placement = new Transform3D(Basis.Identity, new Vector3(.85f, .15f, 0) - new Vector3(bounds.GetCenter().X, bounds.Position.Y, bounds.GetCenter().Z));
+        else
+        {
+            if (input.PartTransform.Position?.Length != 3) throw new InvalidDataException("partTransform.position requires three coordinates.");
+            Vector3 position = Vectors(input.PartTransform.Position, "partTransform.position")[0];
+            if (position.LengthSquared() > 10000) throw new InvalidDataException("Invalid part position.");
+            float[] q = input.PartTransform.Quaternion;
+            if (q == null || q.Length != 4 || q.Any(x => !float.IsFinite(x))) throw new InvalidDataException("Invalid part quaternion [x,y,z,w].");
+            var quaternion = new Quaternion(q[0], q[1], q[2], q[3]);
+            if (!float.IsFinite(quaternion.LengthSquared()) || quaternion.LengthSquared() < .000001f) throw new InvalidDataException("Part quaternion must have a finite nonzero length.");
+            placement = new Transform3D(new Basis(quaternion.Normalized()), position);
+        }
+        float[] start = input.StartAngles ?? (float[])RobotController.HomeAngles.Clone();
+        if (start.Length != 6 || start.Any(a => !float.IsFinite(a))) throw new InvalidDataException("startAngles requires six finite joint angles in degrees.");
+        return new Prepared(document, seams, placement, start, name);
+    }
+
+    private static Vector3[] Vectors(float[]? values, string label)
+    {
+        if (values == null || values.Length % 3 != 0 || values.Any(v => !float.IsFinite(v))) throw new InvalidDataException("Invalid " + label + " flat XYZ array.");
+        var result = new Vector3[values.Length / 3];
+        for (int i = 0; i < result.Length; i++) result[i] = new Vector3(values[3 * i], values[3 * i + 1], values[3 * i + 2]);
+        return result;
+    }
+
+    private static object Pose(Transform3D transform)
+    {
+        Quaternion q = transform.Basis.GetRotationQuaternion();
+        return new { position = new[] { transform.Origin.X, transform.Origin.Y, transform.Origin.Z }, quaternion = new[] { q.X, q.Y, q.Z, q.W } };
+    }
+
+    private static Dictionary<int, Vector3[]> ReadSource(string path)
+    {
+        using var reader = new BinaryReader(File.OpenRead(path));
+        if (Encoding.ASCII.GetString(reader.ReadBytes(4)) != "ESM1") throw new InvalidDataException("Invalid original robot mesh.");
+        int groups = reader.ReadInt32();
+        var links = new Dictionary<int, List<Vector3>>();
+        for (int group = 0; group < groups; group++)
+        {
+            int link = reader.ReadInt32(); reader.ReadBytes(16); int count = reader.ReadInt32();
+            if (link < 0 || link > 6 || count < 0 || count > 10_000_000 || count % 3 != 0) throw new InvalidDataException("Invalid original robot mesh group.");
+            if (!links.TryGetValue(link, out var vertices)) links[link] = vertices = new List<Vector3>();
+            for (int i = 0; i < count; i++) { vertices.Add(new Vector3(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle())); reader.ReadBytes(12); }
+        }
+        return links.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray());
+    }
+
+    private sealed class BridgeRequest
+    {
+        public WorkerDocument? Document { get; set; }
+        public string? PartName { get; set; }
+        public BridgePose? PartTransform { get; set; }
+        public float[]? StartAngles { get; set; }
+        public string[]? SeamIds { get; set; }
+        public string[]? DeletedSeamIds { get; set; }
+        public float MinimumAngle { get; set; } = 85;
+        public float MaximumAngle { get; set; } = 95;
+        public bool ConcaveOnly { get; set; }
+    }
+    private sealed class BridgePose
+    {
+        public float[] Position { get; set; } = new float[3];
+        public float[] Quaternion { get; set; } = new[] { 0f, 0f, 0f, 1f };
+    }
+    private sealed class WorkerDocument
+    {
+        public float[] Vertices { get; set; } = Array.Empty<float>();
+        public float[] Normals { get; set; } = Array.Empty<float>();
+        public int[] Indices { get; set; } = Array.Empty<int>();
+        public WorkerSeam[] Seams { get; set; } = Array.Empty<WorkerSeam>();
+    }
+    private sealed class WorkerSeam
+    {
+        public string Id { get; set; } = "";
+        public string Kind { get; set; } = "Topology edge";
+        public float[] Points { get; set; } = Array.Empty<float>();
+        public float[] NormalsA { get; set; } = Array.Empty<float>();
+        public float[] NormalsB { get; set; } = Array.Empty<float>();
+        public float AngleDegrees { get; set; }
+        public float MinAngleDegrees { get; set; }
+        public float MaxAngleDegrees { get; set; }
+        public bool Concave { get; set; }
+    }
+}

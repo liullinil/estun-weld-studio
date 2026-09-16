@@ -1,5 +1,7 @@
 # ESTUN Weld Studio
 
+Browser edition: **https://178.105.241.117/hyper/** — original robot CAD, browser teach pendant, STEP import and the same native collision planner. Source, development and deployment notes are in [Web/README.md](Web/README.md).
+
 A Windows robotic welding workspace built with **C# and Godot 4.5.1 .NET**. Import STEP assemblies, review angle-based seam candidates, position CAD with an interactive gizmo, generate checked robot trajectories, and simulate a mounted welding torch, arc, sparks, smoke and cooling weld beads.
 
 The application uses the actual segmented **ESTUN S20-180 Pro** CAD model, an English interface and an original robot-arm icon. No Godot splash logo.

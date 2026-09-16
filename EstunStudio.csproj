@@ -6,6 +6,6 @@
     <RootNamespace>EstunStudio</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Remove=".tools/**;Build/**;Releases/**;artifacts/**;Assets/**" />
+    <Compile Remove=".tools/**;Build/**;Releases/**;artifacts/**;Assets/**;Web/**" />
   </ItemGroup>
 </Project>
