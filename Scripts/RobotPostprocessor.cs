@@ -18,6 +18,9 @@ public sealed class RobotPostprocessorOptions
     public float OrientationToleranceRadians { get; init; } = .001f;
     public float LinearAcceleration { get; init; } = 1000;
     public float JointAcceleration { get; init; } = 300;
+    public int TorchDigitalOutput { get; init; } = 1;
+    public bool LinearizeArcs { get; init; }
+    public WeavingOptions Weaving { get; init; } = new();
 }
 
 public sealed class RobotProgramPrimitive
@@ -88,7 +91,8 @@ public static class RobotPostprocessor
         CancellationToken cancellation = default, Action<float, string>? progress = null, RobotPostprocessorOptions? options = null)
     {
         options ??= new RobotPostprocessorOptions();
-        if (options.Tool < 0 || options.CoordinateSystem < 0 || !Positive(options.PositionToleranceMetres) ||
+        options.Weaving.Validate();
+        if (options.Tool < 0 || options.CoordinateSystem < 0 || options.TorchDigitalOutput < 0 || options.TorchDigitalOutput > 65535 || !Positive(options.PositionToleranceMetres) ||
             !Positive(options.OrientationToleranceRadians) || !Positive(options.LinearAcceleration) || !Positive(options.JointAcceleration))
             throw new ArgumentException("Invalid controller postprocessor options.");
         if (program.StartAngles.Length != 6 || request.JointRest.Length != 6 || !program.StartAngles.SequenceEqual(request.StartAngles) ||
@@ -114,14 +118,14 @@ public static class RobotPostprocessor
             WeldMotion source = program.Motions[i];
             int runEnd = i;
             // Retain the exact original joint transfer geometry. Compress only welding runs.
-            if (source.ArcOn)
+            if (source.ArcOn && !options.Weaving.Enabled)
                 while (runEnd + 1 < program.Motions.Count && program.Motions[runEnd + 1].ArcOn && program.Motions[runEnd + 1].SeamId == source.SeamId) runEnd++;
             RobotProgramPrimitive? primitive = null;
             for (int end = runEnd; source.ArcOn && end >= i; end = end == i ? i - 1 : i + (end - i - 1) / 2)
             {
                 cancellation.ThrowIfCancellationRequested();
                 Curve? curve = Fit(program, poses, i, end, false, request, options, cancellation, out List<Sample> reference);
-                if (curve == null && end > i)
+                if (curve == null && end > i && !options.LinearizeArcs && !options.Weaving.Enabled)
                     curve = Fit(program, poses, i, end, true, request, options, cancellation, out reference);
                 if (curve != null)
                     primitive = Validate(program, i, end, curve, reference, request, options, cancellation);
@@ -147,7 +151,9 @@ public static class RobotPostprocessor
             sourceDocuments = new[] { "commands/00-lua-basics.md", "commands/01-move.md#movj", "commands/01-move.md#movl", "commands/01-move.md#movc", "commands/02-move-params.md#setnoblender", "commands/03-move-compute.md#getjoint", "commands/08-io.md#setdo" },
             targetRepresentation = "jp: six controller joint angles in degrees; no Cartesian Euler conversion",
             modelFrame = "Robot base, right handed, Y up, metres. CAD-to-model (x,y,z)=(CAD y,CAD z,CAD x).",
-            tool = options.Tool, coordinateSystem = options.CoordinateSystem, torchDigitalOutput = 1,
+            tool = options.Tool, coordinateSystem = options.CoordinateSystem, torchDigitalOutput = options.TorchDigitalOutput,
+            linearizeArcs = options.LinearizeArcs, weaving = options.Weaving,
+            weavingImplementation = options.Weaving.Enabled ? "Explicit sinusoidal path sampled in native planner and exported as validated movL/movJ. Amplitude is one-sided millimetres; frequency is nominal Hz; angle rotates the tool/travel lateral plane; endpoint fade is smoothstep in millimetres. Controller movLW/movCW waveform/frame are unspecified in the supplied manual and are not inferred." : "Disabled",
             positionToleranceMm = options.PositionToleranceMetres * 1000,
             orientationToleranceDegrees = Mathf.RadToDeg(options.OrientationToleranceRadians),
             validation = "Original joint transfers retained. Cartesian primitives fitted against densely sampled source FK; new IK path and every playback joint segment collision checked. Sampled offline geometry only.",
@@ -293,7 +299,9 @@ public static class RobotPostprocessor
         text.AppendLine($"-- Cartesian fit tolerance: {Number(options.PositionToleranceMetres * 1000)} mm; orientation: {Number(Mathf.RadToDeg(options.OrientationToleranceRadians))} deg.");
         text.AppendLine("-- L/C: independently sampled IK/collision validation. Other source paths retain movJ.");
         text.AppendLine("-- Offline sampled validation; controller dynamics and cycle time require commissioning.");
-        text.AppendLine("setDO(1,0)");
+        if (options.Weaving.Enabled)
+            text.AppendLine($"-- Explicit sinusoidal weave: amplitude={Number(options.Weaving.AmplitudeMm)} mm, frequency={Number(options.Weaving.FrequencyHz)} Hz, angle={Number(options.Weaving.AngleDegrees)} deg, fade={Number(options.Weaving.FadeMm)} mm. Native IK/collision checked.");
+        text.AppendLine($"setDO({options.TorchDigitalOutput},0)");
         text.Append("local expectedStart = {").Append(string.Join(",", program.StartAngles.Select(Number))).AppendLine("}");
         text.AppendLine("local actualStart = getJoint()");
         text.AppendLine("for axis=1,6 do");
@@ -309,14 +317,14 @@ public static class RobotPostprocessor
         foreach (RobotProgramPrimitive p in primitives)
         {
             if (p.SeamId != seam) { seam = p.SeamId; text.Append("-- Seam: ").AppendLine(seam.Replace('\r', ' ').Replace('\n', ' ')); }
-            if (p.ArcOn != torch) { torch = p.ArcOn; text.AppendLine(torch ? "setDO(1,1)" : "setDO(1,0)"); }
+            if (p.ArcOn != torch) { torch = p.ArcOn; text.AppendLine($"setDO({options.TorchDigitalOutput},{(torch ? 1 : 0)})"); }
             text.Append(p.Command).Append('(');
             if (p.ViaJoints != null) text.Append(JointTarget(p.ViaJoints)).Append(',');
             text.Append(JointTarget(p.EndJoints)).Append(",{v=").Append(Number(p.Speed))
                 .Append(",a=").Append(Number(p.Command == "movJ" ? options.JointAcceleration : options.LinearAcceleration))
                 .Append(",b=0,rb=0,coor=").Append(options.CoordinateSystem).Append(",tool=").Append(options.Tool).AppendLine("})");
         }
-        text.AppendLine("setDO(1,0)");
+        text.AppendLine($"setDO({options.TorchDigitalOutput},0)");
         return text.ToString();
     }
 

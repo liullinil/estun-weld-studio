@@ -38,6 +38,12 @@ public partial class RobotPostprocessorChecks : Node
             Require(arcResult.CircularMoves == 1 && arcResult.LinearMoves == 0, "A constant-orientation circular weld compresses to movC");
             Require(arcResult.Text.Contains("movC({jp={") && arcResult.Primitives.Single(p => p.Command == "movC").ViaJoints?.Length == 6, "movC has an actual validated intermediate joint target");
             CheckPlayback(arcResult, request);
+            var linearized = RobotPostprocessor.Export(arc, request, options: new RobotPostprocessorOptions { LinearizeArcs = true, TorchDigitalOutput = 12 });
+            Require(linearized.CircularMoves == 0 && !linearized.Text.Contains("movC("), "Arcs-as-lines export never emits movC");
+            Require(linearized.LinearMoves > 1 && linearized.Text.Contains("setDO(12,1)") && linearized.Text.TrimEnd().EndsWith("setDO(12,0)"), "Linearized arc uses configured torch output for on and final off");
+            Require(!linearized.Text.Contains("setDO(1,"), "Configured torch output replaces every DO1 write");
+            CheckPlayback(linearized, request);
+            CheckWeaving(line, request, home);
 
             // A changing-orientation arc is not silently assigned undocumented controller orientation behavior.
             WeldProgram rotating = MakeProgram(request, t => new Transform3D(home.Basis * new Basis(Vector3.Up, t * .15f), Arc(t).Origin), 40);
@@ -79,11 +85,46 @@ public partial class RobotPostprocessorChecks : Node
             Require(didCancel, "Postprocessing respects cancellation");
             var configured = RobotPostprocessor.Export(line, request, options: new RobotPostprocessorOptions { Tool = 3, CoordinateSystem = 2 });
             Require(configured.Text.Contains("coor=2,tool=3"), "Configured tool and frame are explicitly emitted");
+            bool invalidIo = false;
+            try { RobotPostprocessor.Export(line, request, options: new RobotPostprocessorOptions { TorchDigitalOutput = -1 }); } catch (ArgumentException) { invalidIo = true; }
+            Require(invalidIo, "Negative torch output is rejected");
             if (OS.GetCmdlineUserArgs().Contains("--bracket")) await CheckActualBracket();
             GD.Print($"PASS: {_checks} controller postprocessor checks; straight {line.Motions.Count}->{lineResult.Primitives.Length}, arc {arc.Motions.Count}->{arcResult.Primitives.Length}");
             GetTree().Quit(0);
         }
         catch (Exception exception) { GD.PrintErr("FAIL: " + exception); GetTree().Quit(1); }
+    }
+
+    private void CheckWeaving(WeldProgram line, WeldPlanRequest request, Transform3D home)
+    {
+        var options = new WeavingOptions { Enabled = true, AmplitudeMm = 2, FrequencyHz = 2, FadeMm = 2 };
+        Require(ReferenceEquals(line, WeavePlanner.Apply(line, request, new WeavingOptions())), "Disabled weaving preserves source program exactly");
+        WeldProgram woven = WeavePlanner.Apply(line, request, options);
+        Require(woven.Motions.Count > line.Motions.Count && woven.Motions[0] == line.Motions[0], "Weaving densely samples welds and retains the original transfer");
+        Require(woven.Motions[^1].TargetAngles.SequenceEqual(line.Motions[^1].TargetAngles), "Weave fades to the exact original end joints for a validated retraction");
+        Require(Math.Abs(woven.DurationSeconds - line.DurationSeconds) < .0001f, "Nominal weave frequency retains source timing");
+        float maxOffset = woven.Motions.Max(m => Math.Abs((m.Tcp.Origin - home.Origin).Dot(home.Basis.Z)));
+        Require(maxOffset > .0018f && maxOffset < .00203f, "Displayed/simulated weave reaches its configured one-sided amplitude");
+        var exported = RobotPostprocessor.Export(woven, request, options: new RobotPostprocessorOptions { Weaving = options, PositionToleranceMetres = .000025f });
+        Require(exported.Text.Contains("Explicit sinusoidal weave") && !exported.Text.Contains("movLW(") && !exported.Text.Contains("movCW("), "Weave uses explicit validated motion without inventing undocumented controller waveform semantics");
+        Require(exported.LinearMoves > 0 && exported.Primitives.Count(p => p.ArcOn) > 50, "Export retains woven samples rather than compressing back to the seam centreline");
+        CheckPlayback(exported, request);
+        foreach (RobotProgramPrimitive primitive in exported.Primitives.Where(p => p.ArcOn))
+            Require(primitive.EndJoints.SequenceEqual(woven.Motions[primitive.SourceEnd].TargetAngles), "Exported weave endpoint matches the actual simulated joint target");
+
+        var rotated = WeavePlanner.Apply(line, request, new WeavingOptions { Enabled = true, AmplitudeMm = 2, FrequencyHz = 2, AngleDegrees = 90 });
+        Require(rotated.Motions.Max(m => Math.Abs((m.Tcp.Origin - home.Origin).Dot(home.Basis.Y))) > .0018f, "Weave plane angle rotates the actual TCP displacement");
+        Vector3 blocker = woven.Motions.OrderByDescending(m => Math.Abs((m.Tcp.Origin - home.Origin).Dot(home.Basis.Z))).First().Tcp.Origin;
+        Vector3[] obstacle = new BoxMesh { Size = Vector3.One * .0003f }.GetFaces().Select(p => p + blocker).ToArray();
+        var blockedRequest = new WeldPlanRequest { ToolTransform = request.ToolTransform,
+            Collision = new CollisionScene(obstacle, new[] { new RobotCapsule(7, request.ToolTransform.Origin, request.ToolTransform.Origin, .000025f) }, floorY: -100, margin: 0) };
+        bool blocked = false;
+        try { WeavePlanner.Apply(line, blockedRequest, options); } catch (InvalidOperationException error) { blocked = error.Message.Contains("collision"); }
+        Require(blocked, "Obstacle inside weave envelope rejects generation rather than exporting an unchecked weave");
+        using var cancelled = new CancellationTokenSource(); cancelled.Cancel();
+        bool didCancel = false;
+        try { WeavePlanner.Apply(line, request, options, cancelled.Token); } catch (OperationCanceledException) { didCancel = true; }
+        Require(didCancel, "Weave calculation supports cancellation");
     }
 
     private async System.Threading.Tasks.Task CheckActualBracket()

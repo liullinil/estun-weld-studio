@@ -23,11 +23,19 @@ public partial class WebBridge : Node
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
     private readonly CancellationTokenSource _shutdown = new();
     private readonly ConcurrentDictionary<string, Job> _jobs = new();
+    private readonly Dictionary<string, CachedCollisionScene> _collisionScenes = new();
+    private readonly object _collisionScenesGate = new();
     private readonly SemaphoreSlim _httpSlots = new(4);
     private HttpListener? _listener;
     private RobotCapsule[] _capsules = Array.Empty<RobotCapsule>();
     private Vector3[] _fixtures = Array.Empty<Vector3>();
     private int _activePlan;
+
+    private sealed class CachedCollisionScene
+    {
+        public required CollisionScene Scene;
+        public DateTime LastUsedUtc = DateTime.UtcNow;
+    }
 
     private sealed class Job
     {
@@ -38,6 +46,9 @@ public partial class WebBridge : Node
         public string Status = "running", Message = "Building collision scene", Error = "";
         public float Progress;
         public object? Result;
+        public WeldProgram? Program;
+        public WeldPlanRequest? Request;
+        public WeavingOptions Weaving = new();
         public object Snapshot()
         {
             lock (Gate) return new { jobId = Id, status = Status, progress = Progress, message = Message, createdUtc = CreatedUtc, result = Result, error = Error };
@@ -114,6 +125,23 @@ public partial class WebBridge : Node
             });
             return;
         }
+        if (path.StartsWith("/jobs/", StringComparison.Ordinal) && path.EndsWith("/export", StringComparison.Ordinal) && method == "POST")
+        {
+            string id = path[6..^7];
+            if (!_jobs.TryGetValue(id, out Job? source) || source.Status != "complete" || source.Program == null || source.Request == null)
+            { await Reply(context, 404, new { error = "Generate a program before exporting; the source job is unavailable or expired." }); return; }
+            ExportRequest input = await ReadRequest<ExportRequest>(context.Request);
+            if (input.TorchDigitalOutput < 0 || input.TorchDigitalOutput > 65535) throw new InvalidDataException("Torch digital output must be an integer from 0 to 65535.");
+            if (Interlocked.CompareExchange(ref _activePlan, 1, 0) != 0)
+            { await Reply(context, 429, new { error = "The native planner is busy. Wait for the current job or cancel it." }); return; }
+            var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token);
+            cancellation.CancelAfter(TimeSpan.FromMinutes(10));
+            var job = new Job { Cancellation = cancellation, Message = "Preparing export", Program = source.Program, Request = source.Request, Weaving = source.Weaving };
+            _jobs[job.Id] = job;
+            _ = Task.Run(() => RunExport(job, input));
+            await Reply(context, 202, new { jobId = job.Id, status = "running", poll = "/jobs/" + job.Id });
+            return;
+        }
         if (path.StartsWith("/jobs/", StringComparison.Ordinal) && (method == "GET" || method == "DELETE"))
         {
             string id = path[6..];
@@ -129,8 +157,8 @@ public partial class WebBridge : Node
             bool scheduled = false;
             try
             {
-                BridgeRequest input = await ReadRequest(context.Request);
-                Prepared prepared = Prepare(input);
+                BridgeRequest input = await ReadRequest<BridgeRequest>(context.Request);
+                Prepared prepared = Prepare(input, requireSelectedSeam: true);
                 var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token);
                 cancellation.CancelAfter(TimeSpan.FromMinutes(10));
                 var job = new Job { Cancellation = cancellation };
@@ -144,11 +172,39 @@ public partial class WebBridge : Node
         }
         if (path == "/check" && method == "POST")
         {
-            BridgeRequest input = await ReadRequest(context.Request);
-            Prepared prepared = Prepare(input);
-            CollisionScene collision = MakeCollision(prepared);
-            bool clear = collision.Check(prepared.StartAngles, out string reason);
-            await Reply(context, 200, new { clear, reason, angles = prepared.StartAngles, tcp = Pose(RobotKinematics.Forward(prepared.StartAngles, RobotKinematics.StandardRestTransforms(), WeldTorch.ToolTransform)), validation = "Offline geometric pose check using the original desktop collision model." });
+            BridgeRequest input = await ReadRequest<BridgeRequest>(context.Request);
+            float[] angles = input.StartAngles ?? (float[])RobotController.HomeAngles.Clone();
+            if (angles.Length != 6 || angles.Any(a => !float.IsFinite(a))) throw new InvalidDataException("startAngles requires six finite joint angles in degrees.");
+            string sceneId = input.SceneId ?? "";
+            CollisionScene? collision = null;
+            if (sceneId.Length > 0)
+            {
+                if (input.Document != null || input.PartTransform != null) throw new InvalidDataException("To update a collision scene, submit the document and placement without sceneId.");
+                lock (_collisionScenesGate)
+                {
+                    PruneCollisionScenes();
+                    if (_collisionScenes.TryGetValue(sceneId, out CachedCollisionScene? cached))
+                    { cached.LastUsedUtc = DateTime.UtcNow; collision = cached.Scene; }
+                }
+                if (collision == null)
+                { await Reply(context, 404, new { error = "Collision scene expired; submit the document and placement again.", code = "collision_scene_expired" }); return; }
+            }
+            else
+            {
+                collision = input.Document == null ? new CollisionScene(Array.Empty<Vector3>(), _capsules, staticTriangles: _fixtures) : MakeCollision(Prepare(input));
+                sceneId = Guid.NewGuid().ToString("N");
+                lock (_collisionScenesGate)
+                {
+                    PruneCollisionScenes();
+                    while (_collisionScenes.Count >= 8) _collisionScenes.Remove(_collisionScenes.MinBy(p => p.Value.LastUsedUtc).Key);
+                    _collisionScenes[sceneId] = new CachedCollisionScene { Scene = collision };
+                }
+            }
+            bool clear = collision.CheckDetailed(angles, out string reason, out CollisionContact[] contacts);
+            await Reply(context, 200, new { sceneId, clear, reason, links = contacts.SelectMany(c => c.Links).Distinct().OrderBy(i => i).ToArray(),
+                collisions = contacts.Select(c => new { kind = c.Kind, reason = c.Reason, links = c.Links }), angles,
+                tcp = Pose(RobotKinematics.Forward(angles, RobotKinematics.StandardRestTransforms(), WeldTorch.ToolTransform)),
+                validation = "Native pose collision check with adjacent links excluded. Visualization does not disable planner collision checks." });
             return;
         }
         await Reply(context, 404, new { error = "Unknown bridge route." });
@@ -167,29 +223,63 @@ public partial class WebBridge : Node
                 ToolTransform = WeldTorch.ToolTransform, Collision = collision, PartName = input.Name
             };
             WeldProgram program = WeldPlanner.Plan(request, job.Cancellation.Token,
-                (progress, message) => { lock (job.Gate) { job.Progress = progress * .8f; job.Message = message; } });
+                (progress, message) => { lock (job.Gate) { job.Progress = progress * .7f; job.Message = message; } });
             double planningSeconds = watch.Elapsed.TotalSeconds;
+            program = WeavePlanner.Apply(program, request, input.Weaving, job.Cancellation.Token,
+                (progress, message) => { lock (job.Gate) { job.Progress = .7f + progress * .15f; job.Message = message; } });
+            double weavingSeconds = watch.Elapsed.TotalSeconds - planningSeconds;
             RobotPostprocessorResult controller = RobotPostprocessor.Export(program, request, job.Cancellation.Token,
-                (progress, message) => { lock (job.Gate) { job.Progress = .8f + progress * .2f; job.Message = message; } });
-            var playback = new WeldProgram { StartAngles = program.StartAngles, ToolTransform = program.ToolTransform, PartName = program.PartName };
-            playback.Seams.AddRange(program.Seams);playback.Motions.AddRange(controller.PlaybackMotions);
-            using JsonDocument document = JsonDocument.Parse(playback.ToJson());
-            string summary = $"{program.ReadyCount} ready / {program.BlockedCount} blocked · {controller.Primitives.Length} commands · {watch.Elapsed.TotalSeconds:0.0}s calculation";
-            object result = new { summary, readyCount = program.ReadyCount, blockedCount = program.BlockedCount,
-                durationSeconds = playback.DurationSeconds, program = document.RootElement.Clone(), csv = playback.ToCsv(),
-                timing = new { planningSeconds, postprocessingSeconds = watch.Elapsed.TotalSeconds - planningSeconds, totalSeconds = watch.Elapsed.TotalSeconds },
-                controller = new { text = controller.Text, fileName = controller.FileName, metadata = controller.Metadata,
-                    jointMoves = controller.JointMoves, linearMoves = controller.LinearMoves, circularMoves = controller.CircularMoves,
-                    description = $"CODROID Lua · {controller.JointMoves} joint / {controller.LinearMoves} linear / {controller.CircularMoves} circular moves · torch DO1. Tool 1 and coordinate system 1 must match the calibrated cell.",
-                    primitives = controller.Primitives.Select(p => new { command = p.Command, sourceStart = p.SourceStart, sourceEnd = p.SourceEnd, arc = p.ArcOn, seam = p.SeamId, startJoints = p.StartJoints, endJoints = p.EndJoints, viaJoints = p.ViaJoints, speed = p.Speed, duration = p.DurationSeconds }) } };
-            lock (job.Gate) { job.Result = result; job.Progress = 1; job.Message = summary; job.Status = "complete"; }
+                (progress, message) => { lock (job.Gate) { job.Progress = .85f + progress * .15f; job.Message = message; } },
+                new RobotPostprocessorOptions { Weaving = input.Weaving, PositionToleranceMetres = input.Weaving.Enabled ? .000025f : .0005f });
+            object result = MakeResult(program, controller, planningSeconds, weavingSeconds, watch.Elapsed.TotalSeconds, 1, out string summary);
+            lock (job.Gate) { job.Program = program; job.Request = request; job.Weaving = input.Weaving; job.Result = result; job.Progress = 1; job.Message = summary; job.Status = "complete"; }
         }
         catch (OperationCanceledException) { lock (job.Gate) { job.Status = "cancelled"; job.Message = "Planning cancelled or exceeded the 10-minute time limit."; } }
         catch (Exception exception) { lock (job.Gate) { job.Status = "failed"; job.Error = exception.Message; job.Message = "Planning failed"; } GD.PrintErr(exception); }
         finally { Interlocked.Exchange(ref _activePlan, 0); }
     }
 
+    private void RunExport(Job job, ExportRequest input)
+    {
+        try
+        {
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            RobotPostprocessorResult controller = RobotPostprocessor.Export(job.Program!, job.Request!, job.Cancellation.Token,
+                (progress, message) => { lock (job.Gate) { job.Progress = progress; job.Message = message; } },
+                new RobotPostprocessorOptions { LinearizeArcs = input.LinearizeArcs, TorchDigitalOutput = input.TorchDigitalOutput,
+                    Weaving = job.Weaving, PositionToleranceMetres = job.Weaving.Enabled ? .000025f : .0005f });
+            object result = MakeResult(job.Program!, controller, 0, 0, watch.Elapsed.TotalSeconds, input.TorchDigitalOutput, out string summary);
+            lock (job.Gate) { job.Result = result; job.Progress = 1; job.Message = summary; job.Status = "complete"; }
+        }
+        catch (OperationCanceledException) { lock (job.Gate) { job.Status = "cancelled"; job.Message = "Export cancelled or exceeded the 10-minute time limit."; } }
+        catch (Exception exception) { lock (job.Gate) { job.Status = "failed"; job.Error = exception.Message; job.Message = "Export failed"; } GD.PrintErr(exception); }
+        finally { Interlocked.Exchange(ref _activePlan, 0); }
+    }
+
+    private static object MakeResult(WeldProgram program, RobotPostprocessorResult controller, double planningSeconds,
+        double weavingSeconds, double totalSeconds, int torchDigitalOutput, out string summary)
+    {
+        var playback = new WeldProgram { StartAngles = program.StartAngles, ToolTransform = program.ToolTransform, PartName = program.PartName };
+        playback.Seams.AddRange(program.Seams); playback.Motions.AddRange(controller.PlaybackMotions);
+        using JsonDocument document = JsonDocument.Parse(playback.ToJson());
+        summary = $"{program.ReadyCount} ready / {program.BlockedCount} blocked · {controller.Primitives.Length} commands · {totalSeconds:0.0}s calculation";
+        return new { summary, readyCount = program.ReadyCount, blockedCount = program.BlockedCount,
+            durationSeconds = playback.DurationSeconds, program = document.RootElement.Clone(), csv = playback.ToCsv(),
+            timing = new { planningSeconds, weavingSeconds, postprocessingSeconds = totalSeconds - planningSeconds - weavingSeconds, totalSeconds },
+            controller = new { text = controller.Text, fileName = controller.FileName, metadata = controller.Metadata,
+                jointMoves = controller.JointMoves, linearMoves = controller.LinearMoves, circularMoves = controller.CircularMoves,
+                description = $"CODROID Lua · {controller.JointMoves} joint / {controller.LinearMoves} linear / {controller.CircularMoves} circular moves · torch DO{torchDigitalOutput}. Tool 1 and coordinate system 1 must match the calibrated cell.",
+                primitives = controller.Primitives.Select(p => new { command = p.Command, sourceStart = p.SourceStart, sourceEnd = p.SourceEnd, arc = p.ArcOn, seam = p.SeamId, startJoints = p.StartJoints, endJoints = p.EndJoints, viaJoints = p.ViaJoints, speed = p.Speed, duration = p.DurationSeconds }) } };
+    }
+
     private CollisionScene MakeCollision(Prepared input) => new(input.Document.Indices.Select(i => input.PartTransform * input.Document.Vertices[i]).ToArray(), _capsules, staticTriangles: _fixtures);
+
+    // Caller holds _collisionScenesGate. Cached scenes are immutable and checks use per-call scratch memory.
+    private void PruneCollisionScenes()
+    {
+        DateTime cutoff = DateTime.UtcNow - TimeSpan.FromMinutes(15);
+        foreach (string id in _collisionScenes.Where(p => p.Value.LastUsedUtc < cutoff).Select(p => p.Key).ToArray()) _collisionScenes.Remove(id);
+    }
 
     private void PruneJobs()
     {
@@ -203,7 +293,7 @@ public partial class WebBridge : Node
         }
     }
 
-    private static async Task<BridgeRequest> ReadRequest(HttpListenerRequest request)
+    private static async Task<T> ReadRequest<T>(HttpListenerRequest request)
     {
         if (request.ContentLength64 > MaximumBodyBytes) throw new InvalidDataException("JSON body exceeds the 64 MB bridge limit.");
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -216,7 +306,7 @@ public partial class WebBridge : Node
             bytes.Write(buffer, 0, count);
         }
         bytes.Position = 0;
-        return await JsonSerializer.DeserializeAsync<BridgeRequest>(bytes, JsonOptions, timeout.Token) ?? throw new InvalidDataException("Empty JSON request.");
+        return await JsonSerializer.DeserializeAsync<T>(bytes, JsonOptions, timeout.Token) ?? throw new InvalidDataException("Empty JSON request.");
     }
 
     private static async Task Reply(HttpListenerContext context, int status, object body)
@@ -230,9 +320,9 @@ public partial class WebBridge : Node
         context.Response.Close();
     }
 
-    private sealed record Prepared(CadDocument Document, CadSeam[] Seams, Transform3D PartTransform, float[] StartAngles, string Name);
+    private sealed record Prepared(CadDocument Document, CadSeam[] Seams, Transform3D PartTransform, float[] StartAngles, string Name, WeavingOptions Weaving);
 
-    private static Prepared Prepare(BridgeRequest input)
+    private static Prepared Prepare(BridgeRequest input, bool requireSelectedSeam = false)
     {
         WorkerDocument raw = input.Document ?? throw new InvalidDataException("document is required (the original CAD worker JSON).");
         Vector3[] vertices = Vectors(raw.Vertices, "vertices"), normals = Vectors(raw.Normals, "normals");
@@ -264,9 +354,17 @@ public partial class WebBridge : Node
         }
         if (!float.IsFinite(input.MinimumAngle) || !float.IsFinite(input.MaximumAngle) || input.MinimumAngle < 0 || input.MaximumAngle > 180 || input.MinimumAngle > input.MaximumAngle)
             throw new InvalidDataException("Invalid seam angle range.");
+        if (!float.IsFinite(input.MinimumLengthMm) || !float.IsFinite(input.MaximumLengthMm) || input.MinimumLengthMm < 0 || input.MaximumLengthMm > 100000 || input.MinimumLengthMm > input.MaximumLengthMm)
+            throw new InvalidDataException("Invalid seam length range (millimetres).");
+        input.Weaving ??= new WeavingOptions();
+        input.Weaving.Validate();
         HashSet<string>? included = input.SeamIds == null ? null : new HashSet<string>(input.SeamIds, StringComparer.Ordinal);
-        CadSeam[] seams = document.Seams.Where(s => !s.Deleted && (included != null ? included.Contains(s.Id) : s.MatchesAngleRange(input.MinimumAngle, input.MaximumAngle) && (!input.ConcaveOnly || s.Concave || s.Kind.Contains("contact", StringComparison.OrdinalIgnoreCase)))).ToArray();
+        CadSeam[] seams = document.Seams.Where(s => !s.Deleted && (included == null || included.Contains(s.Id)) &&
+            s.MinAngleDegrees >= input.MinimumAngle - .05f && s.MaxAngleDegrees <= input.MaximumAngle + .05f &&
+            s.Length * 1000 >= input.MinimumLengthMm - .001f && s.Length * 1000 <= input.MaximumLengthMm + .001f &&
+            (!input.ConcaveOnly || s.Concave || s.Kind.Contains("contact", StringComparison.OrdinalIgnoreCase))).ToArray();
         if (seams.Length > 256) throw new InvalidDataException("Select at most 256 seam candidates per plan.");
+        if (requireSelectedSeam && (included == null || seams.Length == 0)) throw new InvalidDataException("Select at least one seam inside the angle and length filters.");
         Transform3D placement;
         if (input.PartTransform == null)
             placement = new Transform3D(Basis.Identity, new Vector3(.85f, .15f, 0) - new Vector3(bounds.GetCenter().X, bounds.Position.Y, bounds.GetCenter().Z));
@@ -283,7 +381,7 @@ public partial class WebBridge : Node
         }
         float[] start = input.StartAngles ?? (float[])RobotController.HomeAngles.Clone();
         if (start.Length != 6 || start.Any(a => !float.IsFinite(a))) throw new InvalidDataException("startAngles requires six finite joint angles in degrees.");
-        return new Prepared(document, seams, placement, start, name);
+        return new Prepared(document, seams, placement, start, name, input.Weaving);
     }
 
     private static Vector3[] Vectors(float[]? values, string label)
@@ -318,6 +416,7 @@ public partial class WebBridge : Node
 
     private sealed class BridgeRequest
     {
+        public string? SceneId { get; set; }
         public WorkerDocument? Document { get; set; }
         public string? PartName { get; set; }
         public BridgePose? PartTransform { get; set; }
@@ -326,7 +425,15 @@ public partial class WebBridge : Node
         public string[]? DeletedSeamIds { get; set; }
         public float MinimumAngle { get; set; } = 85;
         public float MaximumAngle { get; set; } = 95;
+        public float MinimumLengthMm { get; set; } = .5f;
+        public float MaximumLengthMm { get; set; } = 100000;
+        public WeavingOptions Weaving { get; set; } = new();
         public bool ConcaveOnly { get; set; }
+    }
+    private sealed class ExportRequest
+    {
+        public bool LinearizeArcs { get; set; }
+        public int TorchDigitalOutput { get; set; } = 1;
     }
     private sealed class BridgePose
     {

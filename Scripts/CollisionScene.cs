@@ -9,6 +9,11 @@ namespace EstunStudio;
 /// <param name="Link">0 = fixed base, 1..6 = articulated links, 7 = torch in flange coordinates.</param>
 public readonly record struct RobotCapsule(int Link, Vector3 A, Vector3 B, float Radius, Aabb? LocalBounds = null);
 
+public sealed record CollisionContact(string Kind, string Reason, int LinkA, int LinkB = -1)
+{
+    public int[] Links => LinkB >= 0 ? new[] { LinkA, LinkB } : LinkA >= 0 ? new[] { LinkA } : Array.Empty<int>();
+}
+
 /// <summary>Pure-math BVH against imported CAD; capsule broad phase and tight source-mesh slab bounds. All coordinates are robot-base metres.</summary>
 public sealed class CollisionScene
 {
@@ -56,7 +61,18 @@ public sealed class CollisionScene
         _selfPairGroups = groups.ToArray();
     }
 
-    public bool Check(float[] angles, out string reason)
+    public bool Check(float[] angles, out string reason) => CheckPose(angles, out reason, null);
+
+    /// <summary>All implicated links for pose visualization, using the exact same narrow phase and adjacency exclusions as planning.</summary>
+    public bool CheckDetailed(float[] angles, out string reason, out CollisionContact[] contacts)
+    {
+        var hits = new List<CollisionContact>();
+        bool clear = CheckPose(angles, out reason, hits);
+        contacts = hits.Distinct().ToArray();
+        return clear;
+    }
+
+    private bool CheckPose(float[] angles, out string reason, List<CollisionContact>? contacts)
     {
         // A motion contains thousands of samples. Scratch data lives on the stack, never in mutable scene state,
         // so concurrent planning/checks remain independent and sampling generates no per-pose garbage.
@@ -64,16 +80,16 @@ public sealed class CollisionScene
         Span<RobotCapsule> world = _capsules.Length <= 256 ? stackalloc RobotCapsule[_capsules.Length] : new RobotCapsule[_capsules.Length];
         Span<OrientedBounds> boxes = _capsules.Length <= 256 ? stackalloc OrientedBounds[_capsules.Length] : new OrientedBounds[_capsules.Length];
         Span<Aabb> bounds = _capsules.Length <= 256 ? stackalloc Aabb[_capsules.Length] : new Aabb[_capsules.Length];
-        return Check(angles, transforms, world, boxes, bounds, out reason);
+        return Check(angles, transforms, world, boxes, bounds, out reason, contacts);
     }
 
     private bool Check(ReadOnlySpan<float> angles, Span<Transform3D> transforms, Span<RobotCapsule> world,
-        Span<OrientedBounds> boxes, Span<Aabb> bounds, out string reason)
+        Span<OrientedBounds> boxes, Span<Aabb> bounds, out string reason, List<CollisionContact>? contacts = null)
     {
-        if (angles.Length != 6) { reason = "Joint travel limit"; return false; }
+        if (angles.Length != 6) { reason = "Joint travel limit"; contacts?.Add(new("joint-limit", reason, -1)); return false; }
         for (int i = 0; i < 6; i++)
             if (!float.IsFinite(angles[i]) || angles[i] < RobotController.JointMinimum[i] || angles[i] > RobotController.JointMaximum[i])
-            { reason = "Joint travel limit"; return false; }
+            { reason = "Joint travel limit"; contacts?.Add(new("joint-limit", reason, i + 1)); return false; }
         LinkTransforms(angles, _rest, transforms);
         Span<Vector3> linkMin = stackalloc Vector3[8], linkMax = stackalloc Vector3[8];
         linkMin.Fill(Vector3.One * float.PositiveInfinity); linkMax.Fill(Vector3.One * float.NegativeInfinity);
@@ -85,12 +101,12 @@ public sealed class CollisionScene
             if (hasBox) boxes[i] = new OrientedBounds(c.LocalBounds!.Value, pose);
             float floor = hasBox ? boxes[i].MinimumY : Math.Min(c.A.Y, c.B.Y) - c.Radius;
             if (c.Link > 0 && floor < _floorY + Margin)
-            { reason = $"{LinkName(c.Link)} / floor collision"; return false; }
+            { reason = $"{LinkName(c.Link)} / floor collision"; if (contacts == null) return false; contacts.Add(new("floor", reason, c.Link)); }
             bool partHit = hasBox ? _part.IntersectsBox(boxes[i], Margin) : _part.IntersectsCapsule(c.A, c.B, c.Radius + Margin);
             if (partHit)
-            { reason = $"{LinkName(c.Link)} / workpiece collision"; return false; }
+            { reason = $"{LinkName(c.Link)} / workpiece collision"; if (contacts == null) return false; contacts.Add(new("workpiece", reason, c.Link)); }
             if (c.Link > 0 && (hasBox ? _fixtures.IntersectsBox(boxes[i], Margin) : _fixtures.IntersectsCapsule(c.A, c.B, c.Radius + Margin)))
-            { reason = $"{LinkName(c.Link)} / fixture collision"; return false; }
+            { reason = $"{LinkName(c.Link)} / fixture collision"; if (contacts == null) return false; contacts.Add(new("fixture", reason, c.Link)); }
             // This only rejects separated enclosing capsules. The original capsule/OBB narrow phase remains authoritative.
             Vector3 padding = Vector3.One * (c.Radius + Margin + .000001f);
             Vector3 low = c.A.Min(c.B) - padding;
@@ -114,11 +130,11 @@ public sealed class CollisionScene
                 else if (b.LocalBounds.HasValue) hit = boxes[j].IntersectsCapsule(a.A, a.B, a.Radius + Margin);
                 else hit = true;
                 if (hit)
-                { reason = $"Self collision: {LinkName(a.Link)} / {LinkName(b.Link)}"; return false; }
+                { reason = $"Self collision: {LinkName(a.Link)} / {LinkName(b.Link)}"; if (contacts == null) return false; contacts.Add(new("self", reason, a.Link, b.Link)); }
             }
         }
-        reason = "";
-        return true;
+        reason = contacts is { Count: > 0 } ? contacts[0].Reason : "";
+        return contacts == null || contacts.Count == 0;
     }
 
     /// <summary>Motion sampling limits a 2.7 m swept radius to about 1.5 mm per step (joint-angle sum maximum 0.032 degrees).</summary>

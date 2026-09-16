@@ -1,6 +1,7 @@
 const paths = {
   axes:'<path d="M7 17V4m0 13h13M7 17l-4 4M7 4l-3 3m3-3 3 3m10 10-3-3m3 3-3 3"/>',
   trace:'<path d="M3 19h6V7h12"/><circle cx="3" cy="19" r="1.5"/><circle cx="9" cy="19" r="1.5"/><circle cx="9" cy="7" r="1.5"/><circle cx="21" cy="7" r="1.5"/>',
+  collision:'<path d="m8 4 8 8-8 8-6-6 6-6m8 0 6 6-6 6M12 2v3m0 14v3M2 2l3 3m14 14 3 3"/><path d="m8 8 8 8M16 8l-8 8"/>',
   shadows:'<path d="m12 3 8 5v8l-8 5-8-5V8Zm0 0v9m-8-4 8 4 8-4m-8 4v9"/><path d="m14 14 4-2v3l-4 3Z" fill="currentColor" stroke="none"/>',
   ao:'<circle cx="12" cy="10" r="6"/><path d="M3 18c3-4 15-4 18 0M5 21h14"/>',
   bloom:'<path d="m12 2 2.3 7.7L22 12l-7.7 2.3L12 22l-2.3-7.7L2 12l7.7-2.3Z"/>',
