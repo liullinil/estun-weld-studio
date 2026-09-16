@@ -3,6 +3,8 @@ import importlib.util
 import json
 import math
 import pathlib
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -119,6 +121,33 @@ class CadImportChecks(unittest.TestCase):
             cad.import_step(source, self.directory / "bad.json")
         with self.assertRaises(ValueError):
             cad.import_step(self.directory / "fake.stl", self.directory / "bad.json")
+
+    def test_contact_broad_phase_preserves_tolerance_and_located_bounds(self):
+        from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+        from OCP.gp import gp_Trsf, gp_Vec
+        transform = gp_Trsf()
+        transform.SetTranslation(gp_Vec(100, 200, 300))
+        shape = BRepPrimAPI_MakeBox(10, 20, 30).Shape().Moved(cad.TopLoc_Location(transform))
+        box = cad.bounds(shape)
+        self.assertTrue(cad.bounds_contains_point(box, cad.gp_Pnt(110.019, 210, 310)))
+        self.assertFalse(cad.bounds_contains_point(box, cad.gp_Pnt(110.021, 210, 310)))
+        self.assertTrue(cad.bounds_overlap(box, (110.019, 200, 300, 120, 220, 330)))
+        self.assertFalse(cad.bounds_overlap(box, (110.021, 200, 300, 120, 220, 330)))
+        self.assertTrue(cad.bounds_overlap(None, box))
+
+    def test_daemon_recovers_from_failed_import_and_reuses_worker(self):
+        source = self.directory / "daemon-invalid.step"
+        source.write_text("not STEP geometry")
+        inputs = [source, ROOT / "Assets/Samples/WeldingBracket.step", ROOT / "Assets/Samples/WeldingBracket.step"]
+        requests = [{"id": i, "input": str(item), "output": str(self.directory / f"daemon-{i}.json")} for i, item in enumerate(inputs)]
+        proc = subprocess.run([sys.executable, str(ROOT / "tools/cad_import.py"), "--daemon"], input="".join(json.dumps(r) + "\n" for r in requests), text=True, encoding="utf-8", capture_output=True, timeout=45, check=True)
+        self.assertIn("CAD_READY", proc.stdout.splitlines())
+        responses = [json.loads(line[len("CAD_RESULT "):]) for line in proc.stdout.splitlines() if line.startswith("CAD_RESULT ")]
+        self.assertEqual([r["id"] for r in responses], [0, 1, 2])
+        self.assertEqual([r["ok"] for r in responses], [False, True, True])
+        self.assertIn("Invalid or unsupported STEP", responses[0]["error"])
+        for i in (1, 2):
+            self.assertEqual(json.loads((self.directory / f"daemon-{i}.json").read_text()), self.bracket)
 
 
 if __name__ == "__main__":

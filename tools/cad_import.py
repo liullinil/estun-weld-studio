@@ -6,6 +6,7 @@ from the BRep, never guessed from tessellation triangles.
 """
 from __future__ import annotations
 import argparse
+import gc
 import itertools
 import json
 import math
@@ -15,12 +16,15 @@ import sys
 from OCP.BRep import BRep_Tool, BRep_Builder
 from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Section
+from OCP.BRepBndLib import BRepBndLib
 from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
 from OCP.BRepClass3d import BRepClass3d_SolidClassifier
 from OCP.BRepExtrema import BRepExtrema_DistShapeShape
 from OCP.BRepLProp import BRepLProp_SLProps
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
+from OCP.Bnd import Bnd_Box
 from OCP.GeomAPI import GeomAPI_ProjectPointOnSurf
+from OCP.GeomAbs import GeomAbs_Plane
 from OCP.IFSelect import IFSelect_RetDone
 from OCP.Interface import Interface_Static
 from OCP.STEPControl import STEPControl_Reader, STEPControl_Writer, STEPControl_AsIs
@@ -83,6 +87,72 @@ def face_normal_at(face, p):
     return surface_normal(face, u, v)
 
 
+class FaceNormals:
+    """Reuse native surface evaluators; a plane's normal is constant everywhere."""
+    def __init__(self, face):
+        self.adaptor = BRepAdaptor_Surface(face)
+        self.props = BRepLProp_SLProps(self.adaptor, 1, 1e-8)
+        self.reverse = face.Orientation() == TopAbs_REVERSED
+        self.surface = None
+        self.constant = None
+        if self.adaptor.GetType() == GeomAbs_Plane:
+            self.constant = self.at_uv(0., 0.)
+        else:
+            # BRep_Tool returns the surface in the face's located coordinates.
+            self.surface = BRep_Tool.Surface_s(face)
+
+    def at_uv(self, u, v):
+        if self.constant is not None:
+            return self.constant
+        self.props.SetParameters(u, v)
+        if not self.props.IsNormalDefined():
+            raise ValueError("Surface normal is undefined")
+        result = xyz(self.props.Normal(), 1.0)
+        return normalized([-x for x in result] if self.reverse else result)
+
+    def at_point(self, point):
+        if self.constant is not None:
+            return self.constant
+        projection = GeomAPI_ProjectPointOnSurf(point, self.surface)
+        if projection.NbPoints() == 0:
+            raise ValueError("Cannot project seam to face")
+        return self.at_uv(*projection.LowerDistanceParameters())
+
+
+class FaceNormalCache:
+    def __init__(self):
+        self.faces = TopTools_IndexedMapOfShape()
+        self.evaluators = {}
+
+    def __getitem__(self, face):
+        # TopoDS Python wrappers compare by object identity; OpenCascade's map
+        # correctly matches fresh wrappers of the same located BRep face.
+        key = (self.faces.Add(face), face.Orientation())
+        if key not in self.evaluators:
+            self.evaluators[key] = FaceNormals(face)
+        return self.evaluators[key]
+
+
+def bounds(shape):
+    box = Bnd_Box()
+    # BRep bounds contain the exact shape and its tolerance; no tessellation
+    # quality is changed by using them solely as a conservative broad phase.
+    try:
+        BRepBndLib.Add_s(shape, box, False)
+        return box.Get() if not box.IsVoid() and not box.IsWhole() else None
+    except Exception:
+        # An unsupported bound must never exclude a possible contact.
+        return None
+
+
+def bounds_overlap(a, b, tolerance=.02):
+    return a is None or b is None or all(a[i] <= b[i + 3] + tolerance and b[i] <= a[i + 3] + tolerance for i in range(3))
+
+
+def bounds_contains_point(box, point, tolerance=.02):
+    return box is None or all(box[i] - tolerance <= value <= box[i + 3] + tolerance for i, value in enumerate((point.X(), point.Y(), point.Z())))
+
+
 def sample_edge(edge):
     curve = BRepAdaptor_Curve(edge)
     first, last = curve.FirstParameter(), curve.LastParameter()
@@ -98,12 +168,14 @@ def sample_edge(edge):
     return [curve.Value(first + (last - first) * i / (count - 1)) for i in range(count)]
 
 
-def candidate(points, face_a, face_b, kind, whole_shape=None):
+def candidate(points, face_a, face_b, kind, whole_shape=None, evaluators=None, classifier=None):
     if len(points) < 2:
         return None
     na, nb, angles = [], [], []
+    normal_a = evaluators[face_a].at_point if evaluators is not None else FaceNormals(face_a).at_point
+    normal_b = evaluators[face_b].at_point if evaluators is not None else FaceNormals(face_b).at_point
     for point in points:
-        a, b = face_normal_at(face_a, point), face_normal_at(face_b, point)
+        a, b = normal_a(point), normal_b(point)
         angle = math.degrees(math.acos(max(-1.0, min(1.0, dot(a, b)))))
         na.extend(a)
         nb.extend(b)
@@ -120,7 +192,10 @@ def candidate(points, face_a, face_b, kind, whole_shape=None):
             d = normalized([a[i] - b[i] for i in range(3)])
             p = points[mid]
             probe = gp_Pnt(p.X() + d[0] * .05, p.Y() - d[2] * .05, p.Z() + d[1] * .05)
-            concave = BRepClass3d_SolidClassifier(whole_shape, probe, 1e-6).State() == TopAbs_IN
+            if classifier is None:
+                classifier = BRepClass3d_SolidClassifier(whole_shape)
+            classifier.Perform(probe, 1e-6)
+            concave = classifier.State() == TopAbs_IN
         except Exception:
             pass
     return {
@@ -154,20 +229,32 @@ def triangulate(shape, faces):
             raise ValueError(f"Model exceeds {MAX_TRIANGLES:,} triangles; simplify STEP before import")
         offset = len(vertices) // 3
         transform = location.Transformation()
-        fallback_normals = [[0., 0., 0.] for _ in range(tri.NbNodes())]
         local_points = []
+        local_normals = []
         reverse = face.Orientation() == TopAbs_REVERSED
+        try:
+            evaluator = FaceNormals(face)
+        except Exception:
+            evaluator = None
         for i in range(1, tri.NbNodes() + 1):
             p = tri.Node(i).Transformed(transform)
             v = xyz(p)
             vertices.extend(v)
             local_points.append(v)
+            try:
+                uv = tri.UVNode(i)
+                local_normals.append(evaluator.at_uv(uv.X(), uv.Y()))
+            except Exception:
+                local_normals.append(None)
+        fallback_normals = [[0., 0., 0.] for _ in local_points] if any(n is None for n in local_normals) else None
         for i in range(1, tri.NbTriangles() + 1):
             a, b, c = [x - 1 for x in tri.Triangle(i).Get()]
             if reverse:
                 b, c = c, b
             # OpenCascade is CCW; Godot front faces are clockwise.
             indices.extend([offset + a, offset + c, offset + b])
+            if fallback_normals is None:
+                continue
             v0, v1, v2 = local_points[a], local_points[b], local_points[c]
             e = [v1[j] - v0[j] for j in range(3)]
             f = [v2[j] - v0[j] for j in range(3)]
@@ -175,13 +262,8 @@ def triangulate(shape, faces):
             for vertex in (a, b, c):
                 for j in range(3):
                     fallback_normals[vertex][j] += n[j]
-        for i in range(1, tri.NbNodes() + 1):
-            try:
-                uv = tri.UVNode(i)
-                normal = surface_normal(face, uv.X(), uv.Y())
-            except Exception:
-                normal = normalized(fallback_normals[i - 1])
-            normals.extend(normal)
+        for i, normal in enumerate(local_normals):
+            normals.extend(normal if normal is not None else normalized(fallback_normals[i]))
     if not indices:
         raise ValueError("STEP file contains no tessellatable surfaces")
     return vertices, normals, indices
@@ -196,6 +278,11 @@ def recognize(shape, faces, solids, warnings):
     seams = {}
     skipped = 0
     seam_samples = 0
+    evaluators = FaceNormalCache()
+    try:
+        classifier = BRepClass3d_SolidClassifier(shape)
+    except Exception:
+        classifier = None
     for i in range(1, min(mapping.Extent(), MAX_EDGE_CANDIDATES) + 1):
         try:
             edge = TopoDS.Edge_s(mapping.FindKey(i))
@@ -205,7 +292,7 @@ def recognize(shape, faces, solids, warnings):
                     adjacent.append(TopoDS.Face_s(f))
             if len(adjacent) != 2:
                 continue
-            item = candidate(sample_edge(edge), adjacent[0], adjacent[1], "Topology edge", shape)
+            item = candidate(sample_edge(edge), adjacent[0], adjacent[1], "Topology edge", shape, evaluators, classifier)
             if item:
                 seams[seam_key(item)] = item
                 seam_samples += len(item["points"]) // 3
@@ -216,7 +303,10 @@ def recognize(shape, faces, solids, warnings):
             skipped += 1
     if 1 < len(solids) <= CONTACT_SOLID_LIMIT and len(faces) <= CONTACT_FACE_LIMIT and seam_samples <= MAX_SEAM_SAMPLES:
         progress(f"Checking contact seams between {len(solids)} solids…")
-        for solid_a, solid_b in itertools.combinations(solids, 2):
+        solid_data = [(solid, bounds(solid), [(TopoDS.Face_s(face), bounds(face)) for face in shapes(solid, TopAbs_FACE)]) for solid in solids]
+        for (solid_a, box_a, faces_a), (solid_b, box_b, faces_b) in itertools.combinations(solid_data, 2):
+            if not bounds_overlap(box_a, box_b):
+                continue
             try:
                 separation = BRepExtrema_DistShapeShape(solid_a, solid_b)
                 if not separation.IsDone() or separation.Value() > .02:
@@ -228,23 +318,24 @@ def recognize(shape, faces, solids, warnings):
                 section.Build()
                 if not section.IsDone():
                     continue
-                faces_a = [TopoDS.Face_s(f) for f in shapes(solid_a, TopAbs_FACE)]
-                faces_b = [TopoDS.Face_s(f) for f in shapes(solid_b, TopAbs_FACE)]
                 for edge in shapes(section.Shape(), TopAbs_EDGE):
                     points = sample_edge(TopoDS.Edge_s(edge))
                     if not points:
                         continue
-                    probe = BRepBuilderAPI_MakeVertex(points[len(points) // 2]).Vertex()
+                    midpoint = points[len(points) // 2]
+                    probe = BRepBuilderAPI_MakeVertex(midpoint).Vertex()
                     touching = []
                     for part_faces in (faces_a, faces_b):
                         group = []
-                        for face in part_faces:
+                        for face, face_box in part_faces:
+                            if not bounds_contains_point(face_box, midpoint):
+                                continue
                             distance = BRepExtrema_DistShapeShape(probe, face)
                             if distance.IsDone() and distance.Value() <= .02:
                                 group.append(face)
                         touching.append(group)
                     for fa, fb in itertools.product(*touching):
-                        item = candidate(points, fa, fb, "Part contact")
+                        item = candidate(points, fa, fb, "Part contact", evaluators=evaluators)
                         if item:
                             seams[seam_key(item)] = item
             except Exception:
@@ -308,9 +399,14 @@ def make_sample(destination):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=pathlib.Path)
-    parser.add_argument("--output", type=pathlib.Path, required=True)
+    parser.add_argument("--output", type=pathlib.Path)
     parser.add_argument("--make-sample", action="store_true")
+    parser.add_argument("--daemon", action="store_true", help="Keep OpenCascade loaded; accept stdin JSONL {id,input,output}")
     args = parser.parse_args()
+    if args.daemon:
+        return serve()
+    if args.output is None:
+        parser.error("--output is required for import or sample generation")
     try:
         if args.make_sample:
             make_sample(args.output)
@@ -321,6 +417,34 @@ def main():
     except Exception as exc:
         print(f"CAD import failed: {type(exc).__name__}: {exc}", flush=True)
         return 1
+    return 0
+
+
+def serve():
+    """Private, sequential gateway protocol; native OCP diagnostics may share stdout.
+
+    Only CAD_READY and CAD_RESULT lines are protocol messages. Input/output paths
+    are provided by the trusted local gateway, not directly by browser clients.
+    Killing this process cancels native operations; a replacement can be warmed
+    up immediately without retaining any previous document or request state.
+    """
+    print("CAD_READY", flush=True)
+    for line in sys.stdin:
+        if not line.strip():
+            continue
+        request_id = None
+        try:
+            request = json.loads(line)
+            request_id = request.get("id")
+            source = pathlib.Path(request["input"]).resolve(strict=True)
+            destination = pathlib.Path(request["output"])
+            import_step(source, destination)
+            response = {"id": request_id, "ok": True}
+        except Exception as exc:
+            response = {"id": request_id, "ok": False, "error": f"CAD import failed: {type(exc).__name__}: {exc}"}
+        # Native shape references are request-local and drop before the next job.
+        gc.collect()
+        print("CAD_RESULT " + json.dumps(response, separators=(",", ":")), flush=True)
     return 0
 
 

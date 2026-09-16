@@ -59,13 +59,20 @@ public static class WeldPlanner
             string reason = "No six-axis inverse kinematics solution";
             WeldSeamState state = WeldSeamState.Unreachable;
             Candidate? candidate = null;
+            int orientationAttempt = 0;
+            void ReportAttempt()
+            {
+                cancellation.ThrowIfCancellationRequested();
+                progress?.Invoke((index + orientationAttempt / 12f) / Math.Max(1, route.Count),
+                    $"Checking {seam.Source.Id} ({index + 1}/{route.Count}) · orientation {++orientationAttempt}/12");
+            }
             foreach (bool reverse in new[] { seam.Reverse, !seam.Reverse })
             {
                 SampleSeam(request, seam.Source, reverse, out Vector3[] points, out Vector3[] approaches);
                 // Face normals determine the 45-degree fillet bisector. Roll chooses a wrist branch without changing the arc direction.
                 foreach (float roll in new[] { 0f, 180f, 90f, -90f })
                 {
-                    cancellation.ThrowIfCancellationRequested();
+                    ReportAttempt();
                     candidate = TrySeam(request, points, approaches, roll, current, seam.Source.Id, cancellation, out string failure, out WeldSeamState failureState);
                     if (candidate != null) break;
                     if ((int)failureState >= (int)state) { reason = failure; state = failureState; }
@@ -74,6 +81,7 @@ public static class WeldPlanner
                 // A small push/pull inclination can clear the bent torch neck while preserving the work angle.
                 foreach (float lean in new[] { -12f, 12f })
                 {
+                    ReportAttempt();
                     Vector3[] inclined = approaches.Select((approach, i) =>
                     {
                         Vector3 tangent = (points[Math.Min(i + 1, points.Length - 1)] - points[Math.Max(0, i - 1)]).Normalized();

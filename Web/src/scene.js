@@ -10,6 +10,7 @@ import { SSAOPass } from 'three/addons/postprocessing/SSAOPass.js';
 import { HOME, TOOL, jointMatrix } from './kinematics.js';
 import { createCameraNavigation } from './camera-navigation.js';
 import { selectedSeamOverlay } from './seam-highlight.js';
+import { plannedPathSegments } from './planned-path.js';
 
 export function createStudio(container,onTransform,onSeam){
   const scene=new T.Scene();scene.background=new T.Color('#242b33');scene.fog=new T.FogExp2('#343d47',.025);
@@ -61,6 +62,12 @@ export function createStudio(container,onTransform,onSeam){
   transform.addEventListener('dragging-changed',e=>{orbit.enabled=!e.value;});transform.addEventListener('objectChange',()=>onTransform(part));
   const raycaster=new T.Raycaster();raycaster.params.Line.threshold=.008;let down;
   renderer.domElement.addEventListener('pointerdown',e=>{down=[e.clientX,e.clientY];});renderer.domElement.addEventListener('pointerup',e=>{if(!down||Math.hypot(e.clientX-down[0],e.clientY-down[1])>4||transform.dragging)return;const r=renderer.domElement.getBoundingClientRect();raycaster.setFromCamera(new T.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),camera);const hit=raycaster.intersectObjects(seamGroup.children)[0];if(hit)onSeam(hit.object.userData.id);});
+  const plannedPath=new T.Group();scene.add(plannedPath);
+  function showProgram(program){
+    for(const child of [...plannedPath.children]){child.geometry.dispose();child.material.dispose();plannedPath.remove(child);}
+    const segments=plannedPathSegments(program);
+    for(const kind of ['travel','weld']){if(!segments[kind].length)continue;const geometry=new T.BufferGeometry().setAttribute('position',new T.Float32BufferAttribute(segments[kind],3));const material=kind==='travel'?new T.LineDashedMaterial({color:'#f1b965',dashSize:.024,gapSize:.016,depthTest:false,transparent:true,opacity:.7,toneMapped:false}):new T.LineBasicMaterial({color:'#59f4cf',depthTest:false,transparent:true,opacity:.95,toneMapped:false});const line=new T.LineSegments(geometry,material);line.computeLineDistances();line.renderOrder=5;plannedPath.add(line);}
+  }
   const beadGroup=new T.Group();scene.add(beadGroup);let lastBead=null,beads=[];
   const arcLight=new T.PointLight('#85cfff',0,.9,1);scene.add(arcLight);const arc=mesh(new T.SphereGeometry(.007,12,8),new T.MeshBasicMaterial({color:'#d7f7ff'}));arc.visible=false;arc.castShadow=false;
   const particleGeo=new T.BufferGeometry(),pp=new Float32Array(160*3);particleGeo.setAttribute('position',new T.BufferAttribute(pp,3));const sparks=new T.Points(particleGeo,new T.PointsMaterial({color:'#ffd090',size:.006,transparent:true,opacity:.85,blending:T.AdditiveBlending,depthWrite:false}));scene.add(sparks);sparks.visible=false;
@@ -86,7 +93,7 @@ export function createStudio(container,onTransform,onSeam){
     smoke.forEach((s,i)=>{const age=(time*.65+i/14)%1;s.position.copy(p).add(new T.Vector3(Math.sin(i*12)*age*.03,age*.27,Math.cos(i*12)*age*.03));s.scale.setScalar(.02+age*.14);s.material.opacity=arcOn&&settings.smoke?.22*Math.sin(age*Math.PI):0;});
     if(settings.trace&&moving){if(!trail.length||trail.at(-1).distanceTo(p)>.006){trail.push(p);if(trail.length>1600)trail.shift();trailLine.geometry.dispose();trailLine.geometry=new T.BufferGeometry().setFromPoints(trail);}}trailLine.visible=settings.trace;composer.render();
   }
-  return {renderer,scene,camera,orbit,navigation,part,transform,tcp,loadRobot,loadPart,seams,render,fit,clearEffects,
+  return {renderer,scene,camera,orbit,navigation,part,transform,tcp,loadRobot,loadPart,seams,render,fit,clearEffects,showProgram,
     setAngles(a){joints.forEach((j,i)=>{j.matrix.copy(jointMatrix(i,a[i]));j.matrixWorldNeedsUpdate=true;});},
     setArc(on){arcOn=on;},setAxes(on){axes.visible=on;},setTrace(on){settings.trace=on;},
     setMode(mode){transform.setMode(mode);},setGizmo(on){transform.enabled=on;transform.getHelper().visible=on;},

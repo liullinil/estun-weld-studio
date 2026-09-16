@@ -9,7 +9,7 @@ RUN curl -fsSL https://github.com/godotengine/godot/releases/download/4.5.1-stab
 RUN python3 -m venv /opt/cad && /opt/cad/bin/pip install --no-cache-dir cadquery-ocp==7.7.2.2b2 vtk==9.2.6
 WORKDIR /app/native
 COPY native/ ./
-RUN dotnet build EstunStudio.csproj --nologo -v minimal
+RUN dotnet build EstunStudio.csproj --nologo -v minimal -p:Optimize=true
 RUN godot --headless --editor --path /app/native --import --quit
 WORKDIR /app/web
 COPY web/ ./

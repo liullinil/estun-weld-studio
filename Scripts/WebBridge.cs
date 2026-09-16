@@ -160,15 +160,29 @@ public partial class WebBridge : Node
         {
             job.Cancellation.Token.ThrowIfCancellationRequested();
             CollisionScene collision = MakeCollision(input);
-            WeldProgram program = WeldPlanner.Plan(new WeldPlanRequest
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            var request = new WeldPlanRequest
             {
                 Seams = input.Seams, PartTransform = input.PartTransform, StartAngles = input.StartAngles,
                 ToolTransform = WeldTorch.ToolTransform, Collision = collision, PartName = input.Name
-            }, job.Cancellation.Token, (progress, message) => { lock (job.Gate) { job.Progress = progress; job.Message = message; } });
-            using JsonDocument document = JsonDocument.Parse(program.ToJson());
-            object result = new { summary = program.Summary, readyCount = program.ReadyCount, blockedCount = program.BlockedCount,
-                durationSeconds = program.DurationSeconds, program = document.RootElement.Clone(), csv = program.ToCsv() };
-            lock (job.Gate) { job.Result = result; job.Progress = 1; job.Message = program.Summary; job.Status = "complete"; }
+            };
+            WeldProgram program = WeldPlanner.Plan(request, job.Cancellation.Token,
+                (progress, message) => { lock (job.Gate) { job.Progress = progress * .8f; job.Message = message; } });
+            double planningSeconds = watch.Elapsed.TotalSeconds;
+            RobotPostprocessorResult controller = RobotPostprocessor.Export(program, request, job.Cancellation.Token,
+                (progress, message) => { lock (job.Gate) { job.Progress = .8f + progress * .2f; job.Message = message; } });
+            var playback = new WeldProgram { StartAngles = program.StartAngles, ToolTransform = program.ToolTransform, PartName = program.PartName };
+            playback.Seams.AddRange(program.Seams);playback.Motions.AddRange(controller.PlaybackMotions);
+            using JsonDocument document = JsonDocument.Parse(playback.ToJson());
+            string summary = $"{program.ReadyCount} ready / {program.BlockedCount} blocked · {controller.Primitives.Length} commands · {watch.Elapsed.TotalSeconds:0.0}s calculation";
+            object result = new { summary, readyCount = program.ReadyCount, blockedCount = program.BlockedCount,
+                durationSeconds = playback.DurationSeconds, program = document.RootElement.Clone(), csv = playback.ToCsv(),
+                timing = new { planningSeconds, postprocessingSeconds = watch.Elapsed.TotalSeconds - planningSeconds, totalSeconds = watch.Elapsed.TotalSeconds },
+                controller = new { text = controller.Text, fileName = controller.FileName, metadata = controller.Metadata,
+                    jointMoves = controller.JointMoves, linearMoves = controller.LinearMoves, circularMoves = controller.CircularMoves,
+                    description = $"CODROID Lua · {controller.JointMoves} joint / {controller.LinearMoves} linear / {controller.CircularMoves} circular moves · torch DO1. Tool 1 and coordinate system 1 must match the calibrated cell.",
+                    primitives = controller.Primitives.Select(p => new { command = p.Command, sourceStart = p.SourceStart, sourceEnd = p.SourceEnd, arc = p.ArcOn, seam = p.SeamId, startJoints = p.StartJoints, endJoints = p.EndJoints, viaJoints = p.ViaJoints, speed = p.Speed, duration = p.DurationSeconds }) } };
+            lock (job.Gate) { job.Result = result; job.Progress = 1; job.Message = summary; job.Status = "complete"; }
         }
         catch (OperationCanceledException) { lock (job.Gate) { job.Status = "cancelled"; job.Message = "Planning cancelled or exceeded the 10-minute time limit."; } }
         catch (Exception exception) { lock (job.Gate) { job.Status = "failed"; job.Error = exception.Message; job.Message = "Planning failed"; } GD.PrintErr(exception); }

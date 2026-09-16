@@ -17,6 +17,10 @@ public sealed class CollisionScene
     private readonly RobotCapsule[] _capsules;
     private readonly Transform3D[] _rest;
     private readonly float _floorY;
+    private readonly CollisionPair[] _selfPairs;
+    private readonly CollisionPairGroup[] _selfPairGroups;
+    private readonly record struct CollisionPair(int A, int B, int Group, float RadiusSquared);
+    private readonly record struct CollisionPairGroup(int Start, int End, int LinkA, int LinkB);
     public float Margin { get; }
     public Aabb PartBounds => _part.Bounds;
     public int CapsuleCount => _capsules.Length;
@@ -32,44 +36,87 @@ public sealed class CollisionScene
         _rest = rest ?? RobotKinematics.StandardRestTransforms();
         _floorY = floorY;
         Margin = Math.Max(0, margin);
+        var pairs = new List<CollisionPair>();
+        for (int i = 0; i < _capsules.Length; i++)
+            for (int j = i + 1; j < _capsules.Length; j++)
+            {
+                if (Math.Abs(_capsules[i].Link - _capsules[j].Link) <= 1) continue;
+                float radius = _capsules[i].Radius + _capsules[j].Radius + Margin;
+                pairs.Add(new CollisionPair(i, j, _capsules[i].Link * 8 + _capsules[j].Link, radius * radius));
+            }
+        _selfPairs = pairs.ToArray();
+        var groups = new List<CollisionPairGroup>();
+        for (int start = 0; start < _selfPairs.Length;)
+        {
+            int end = start + 1;
+            while (end < _selfPairs.Length && _selfPairs[end].Group == _selfPairs[start].Group) end++;
+            groups.Add(new CollisionPairGroup(start, end, _selfPairs[start].Group / 8, _selfPairs[start].Group % 8));
+            start = end;
+        }
+        _selfPairGroups = groups.ToArray();
     }
 
     public bool Check(float[] angles, out string reason)
     {
-        if (angles.Length != 6 || angles.Where((a, i) => !float.IsFinite(a) || a < RobotController.JointMinimum[i] || a > RobotController.JointMaximum[i]).Any())
-        { reason = "Joint travel limit"; return false; }
-        Transform3D[] transforms = LinkTransforms(angles, _rest);
-        var world = new RobotCapsule[_capsules.Length];
-        var boxes = new OrientedBounds?[_capsules.Length];
+        // A motion contains thousands of samples. Scratch data lives on the stack, never in mutable scene state,
+        // so concurrent planning/checks remain independent and sampling generates no per-pose garbage.
+        Span<Transform3D> transforms = stackalloc Transform3D[7];
+        Span<RobotCapsule> world = _capsules.Length <= 256 ? stackalloc RobotCapsule[_capsules.Length] : new RobotCapsule[_capsules.Length];
+        Span<OrientedBounds> boxes = _capsules.Length <= 256 ? stackalloc OrientedBounds[_capsules.Length] : new OrientedBounds[_capsules.Length];
+        Span<Aabb> bounds = _capsules.Length <= 256 ? stackalloc Aabb[_capsules.Length] : new Aabb[_capsules.Length];
+        return Check(angles, transforms, world, boxes, bounds, out reason);
+    }
+
+    private bool Check(ReadOnlySpan<float> angles, Span<Transform3D> transforms, Span<RobotCapsule> world,
+        Span<OrientedBounds> boxes, Span<Aabb> bounds, out string reason)
+    {
+        if (angles.Length != 6) { reason = "Joint travel limit"; return false; }
+        for (int i = 0; i < 6; i++)
+            if (!float.IsFinite(angles[i]) || angles[i] < RobotController.JointMinimum[i] || angles[i] > RobotController.JointMaximum[i])
+            { reason = "Joint travel limit"; return false; }
+        LinkTransforms(angles, _rest, transforms);
+        Span<Vector3> linkMin = stackalloc Vector3[8], linkMax = stackalloc Vector3[8];
+        linkMin.Fill(Vector3.One * float.PositiveInfinity); linkMax.Fill(Vector3.One * float.NegativeInfinity);
         for (int i = 0; i < _capsules.Length; i++)
         {
             RobotCapsule c = _capsules[i]; Transform3D pose = transforms[Math.Min(c.Link, 6)];
             world[i] = c = c with { A = pose * c.A, B = pose * c.B };
-            if (c.LocalBounds is Aabb bounds) boxes[i] = new OrientedBounds(bounds, pose);
-            float floor = boxes[i]?.MinimumY ?? Math.Min(c.A.Y, c.B.Y) - c.Radius;
+            bool hasBox = c.LocalBounds.HasValue;
+            if (hasBox) boxes[i] = new OrientedBounds(c.LocalBounds!.Value, pose);
+            float floor = hasBox ? boxes[i].MinimumY : Math.Min(c.A.Y, c.B.Y) - c.Radius;
             if (c.Link > 0 && floor < _floorY + Margin)
             { reason = $"{LinkName(c.Link)} / floor collision"; return false; }
-            bool partHit = boxes[i] is OrientedBounds box ? _part.IntersectsBox(box, Margin) : _part.IntersectsCapsule(c.A, c.B, c.Radius + Margin);
+            bool partHit = hasBox ? _part.IntersectsBox(boxes[i], Margin) : _part.IntersectsCapsule(c.A, c.B, c.Radius + Margin);
             if (partHit)
             { reason = $"{LinkName(c.Link)} / workpiece collision"; return false; }
-            if (c.Link > 0 && (boxes[i] is OrientedBounds fixtureBox ? _fixtures.IntersectsBox(fixtureBox, Margin) : _fixtures.IntersectsCapsule(c.A, c.B, c.Radius + Margin)))
+            if (c.Link > 0 && (hasBox ? _fixtures.IntersectsBox(boxes[i], Margin) : _fixtures.IntersectsCapsule(c.A, c.B, c.Radius + Margin)))
             { reason = $"{LinkName(c.Link)} / fixture collision"; return false; }
+            // This only rejects separated enclosing capsules. The original capsule/OBB narrow phase remains authoritative.
+            Vector3 padding = Vector3.One * (c.Radius + Margin + .000001f);
+            Vector3 low = c.A.Min(c.B) - padding;
+            Vector3 high = c.A.Max(c.B) + padding;
+            bounds[i] = new Aabb(low, high - low);
+            linkMin[c.Link] = linkMin[c.Link].Min(low); linkMax[c.Link] = linkMax[c.Link].Max(high);
         }
-        for (int i = 0; i < world.Length; i++)
-            for (int j = i + 1; j < world.Length; j++)
+        foreach (CollisionPairGroup group in _selfPairGroups)
+        {
+            Vector3 lowA = linkMin[group.LinkA], highA = linkMax[group.LinkA], lowB = linkMin[group.LinkB], highB = linkMax[group.LinkB];
+            if (lowA.X > highB.X || highA.X < lowB.X || lowA.Y > highB.Y || highA.Y < lowB.Y || lowA.Z > highB.Z || highA.Z < lowB.Z) continue;
+            for (int pairIndex = group.Start; pairIndex < group.End; pairIndex++)
             {
+                CollisionPair pair = _selfPairs[pairIndex]; int i = pair.A, j = pair.B;
+                if (!bounds[i].Intersects(bounds[j])) continue;
                 RobotCapsule a = world[i], b = world[j];
-                if (Math.Abs(a.Link - b.Link) <= 1) continue; // Neighbouring housings intentionally interpenetrate at bearings.
-                float radius = a.Radius + b.Radius + Margin;
-                if (DistanceSegmentSegmentSquared(a.A, a.B, b.A, b.B) >= radius * radius) continue;
+                if (DistanceSegmentSegmentSquared(a.A, a.B, b.A, b.B) >= pair.RadiusSquared) continue;
                 bool hit;
-                if (boxes[i] is OrientedBounds boxA && boxes[j] is OrientedBounds boxB) hit = boxA.Intersects(boxB, Margin);
-                else if (boxes[i] is OrientedBounds onlyA) hit = onlyA.IntersectsCapsule(b.A, b.B, b.Radius + Margin);
-                else if (boxes[j] is OrientedBounds onlyB) hit = onlyB.IntersectsCapsule(a.A, a.B, a.Radius + Margin);
+                if (a.LocalBounds.HasValue && b.LocalBounds.HasValue) hit = boxes[i].Intersects(boxes[j], Margin);
+                else if (a.LocalBounds.HasValue) hit = boxes[i].IntersectsCapsule(b.A, b.B, b.Radius + Margin);
+                else if (b.LocalBounds.HasValue) hit = boxes[j].IntersectsCapsule(a.A, a.B, a.Radius + Margin);
                 else hit = true;
                 if (hit)
                 { reason = $"Self collision: {LinkName(a.Link)} / {LinkName(b.Link)}"; return false; }
             }
+        }
         reason = "";
         return true;
     }
@@ -79,33 +126,46 @@ public sealed class CollisionScene
     {
         float sum = 0; for (int i = 0; i < 6; i++) sum += Math.Abs(to[i] - from[i]);
         int steps = Math.Max(1, (int)Math.Ceiling(sum / .032f));
-        var pose = new float[6];
+        Span<float> pose = stackalloc float[6];
+        Span<Transform3D> transforms = stackalloc Transform3D[7];
+        Span<RobotCapsule> world = _capsules.Length <= 256 ? stackalloc RobotCapsule[_capsules.Length] : new RobotCapsule[_capsules.Length];
+        Span<OrientedBounds> boxes = _capsules.Length <= 256 ? stackalloc OrientedBounds[_capsules.Length] : new OrientedBounds[_capsules.Length];
+        Span<Aabb> bounds = _capsules.Length <= 256 ? stackalloc Aabb[_capsules.Length] : new Aabb[_capsules.Length];
         for (int sample = 0; sample <= steps; sample++)
         {
             if ((sample & 31) == 0) cancellation.ThrowIfCancellationRequested();
             float t = sample / (float)steps;
             for (int j = 0; j < 6; j++) pose[j] = Mathf.Lerp(from[j], to[j], t);
-            if (!Check(pose, out reason)) return false;
+            if (!Check(pose, transforms, world, boxes, bounds, out reason)) return false;
         }
         reason = ""; return true;
     }
 
     public static Transform3D[] LinkTransforms(float[] angles, Transform3D[] rest)
     {
-        var output = new Transform3D[7]; output[0] = Transform3D.Identity;
+        var output = new Transform3D[7];
+        LinkTransforms(angles, rest, output);
+        return output;
+    }
+
+    private static void LinkTransforms(ReadOnlySpan<float> angles, Transform3D[] rest, Span<Transform3D> output)
+    {
+        output[0] = Transform3D.Identity;
         for (int i = 0; i < 6; i++)
         {
             Transform3D local = rest[i];
             local.Basis *= new Basis(RobotController.JointAxes[i], Mathf.DegToRad(angles[i]));
             output[i + 1] = output[i] * local;
         }
-        return output;
     }
 
     /// <summary>Source-mesh slices enclose all overlapping triangles, retaining actual link shape without one large link box.</summary>
     public static RobotCapsule[] CreateRobotCapsules(IReadOnlyDictionary<int, Vector3[]> linkTriangles, float sliceLength = .065f)
     {
         var output = new List<RobotCapsule>();
+        Span<Vector3> triangle = stackalloc Vector3[3];
+        Span<Vector3> clippedLow = stackalloc Vector3[6];
+        Span<Vector3> clippedHigh = stackalloc Vector3[6];
         foreach (var item in linkTriangles)
         {
             Vector3[] vertices = item.Value;
@@ -123,9 +183,13 @@ public sealed class CollisionScene
                 var points = new List<Vector3>();
                 for (int i = 0; i + 2 < vertices.Length; i += 3)
                 {
-                    var polygon = new List<Vector3> { vertices[i], vertices[i + 1], vertices[i + 2] };
-                    polygon = Clip(polygon, axis, low, true); polygon = Clip(polygon, axis, high, false);
-                    points.AddRange(polygon);
+                    triangle[0] = vertices[i]; triangle[1] = vertices[i + 1]; triangle[2] = vertices[i + 2];
+                    float triangleLow = Math.Min(triangle[0][axis], Math.Min(triangle[1][axis], triangle[2][axis]));
+                    float triangleHigh = Math.Max(triangle[0][axis], Math.Max(triangle[1][axis], triangle[2][axis]));
+                    if (triangleHigh < low || triangleLow > high) continue;
+                    int lowCount = Clip(triangle, clippedLow, axis, low, true);
+                    int highCount = Clip(clippedLow[..lowCount], clippedHigh, axis, high, false);
+                    for (int point = 0; point < highCount; point++) points.Add(clippedHigh[point]);
                 }
                 if (points.Count == 0) continue;
                 Vector3 lo = points[0], hi = lo;
@@ -141,18 +205,18 @@ public sealed class CollisionScene
         return output.ToArray();
     }
 
-    private static List<Vector3> Clip(List<Vector3> polygon, int axis, float plane, bool above)
+    private static int Clip(ReadOnlySpan<Vector3> polygon, Span<Vector3> output, int axis, float plane, bool above)
     {
-        var output = new List<Vector3>(); if (polygon.Count == 0) return output;
+        int count = 0; if (polygon.Length == 0) return count;
         Vector3 previous = polygon[^1]; bool previousIn = above ? previous[axis] >= plane : previous[axis] <= plane;
         foreach (var current in polygon)
         {
             bool currentIn = above ? current[axis] >= plane : current[axis] <= plane;
-            if (currentIn != previousIn) output.Add(previous.Lerp(current, (plane - previous[axis]) / (current[axis] - previous[axis])));
-            if (currentIn) output.Add(current);
+            if (currentIn != previousIn) output[count++] = previous.Lerp(current, (plane - previous[axis]) / (current[axis] - previous[axis]));
+            if (currentIn) output[count++] = current;
             previous = current; previousIn = currentIn;
         }
-        return output;
+        return count;
     }
 
     private static string LinkName(int link) => link == 0 ? "Base" : link == 7 ? "Torch" : $"A{link}";
@@ -207,7 +271,7 @@ public readonly struct OrientedBounds
     {
         Basis inverse = Rotation.Transposed(); a = inverse * (a - Centre); b = inverse * (b - Centre); c = inverse * (c - Centre);
         Vector3 half = Half + Vector3.One * margin;
-        Vector3[] edges = { b - a, c - b, a - c };
+        Span<Vector3> edges = stackalloc Vector3[] { b - a, c - b, a - c };
         for (int i = 0; i < 3; i++)
         {
             Vector3 axis = i == 0 ? Vector3.Right : i == 1 ? Vector3.Up : Vector3.Back;
@@ -224,11 +288,11 @@ public readonly struct OrientedBounds
     public bool IntersectsCapsule(Vector3 a, Vector3 b, float radius)
     {
         Basis inverse = Rotation.Transposed(); a = inverse * (a - Centre); b = inverse * (b - Centre); Vector3 d = b - a;
-        var cuts = new List<float> { 0, 1 };
+        Span<float> cuts = stackalloc float[8]; cuts[0] = 0; cuts[1] = 1; int cutCount = 2;
         for (int axis = 0; axis < 3; axis++) if (Math.Abs(d[axis]) > 1e-12f)
-            foreach (float sign in new[] { -1f, 1f }) { float t = (sign * Half[axis] - a[axis]) / d[axis]; if (t > 0 && t < 1) cuts.Add(t); }
-        cuts.Sort(); float minimum = float.PositiveInfinity;
-        for (int i = 1; i < cuts.Count; i++)
+            for (int sign = -1; sign <= 1; sign += 2) { float t = (sign * Half[axis] - a[axis]) / d[axis]; if (t > 0 && t < 1) cuts[cutCount++] = t; }
+        cuts = cuts[..cutCount]; cuts.Sort(); float minimum = float.PositiveInfinity;
+        for (int i = 1; i < cuts.Length; i++)
         {
             float lo = cuts[i - 1], hi = cuts[i], middle = (lo + hi) * .5f, aa = 0, ab = 0;
             for (int axis = 0; axis < 3; axis++)

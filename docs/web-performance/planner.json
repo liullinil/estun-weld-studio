@@ -1,0 +1,51 @@
+﻿{
+    "sample":  "Assets/Samples/WeldingBracket.step (all 11 Part contact seams)",
+    "engine":  "Godot 4.5.1 Mono / .NET 8; both builds -p:Optimize=true",
+    "environment":  "Windows local workstation, sequential process runs; wall-time varies with host load",
+    "baseline":  {
+                     "collisionModelSeconds":  1.6950607,
+                     "planSeconds":  88.7132794,
+                     "planAllocatedBytes":  1074909984,
+                     "revalidationSeconds":  21.9344253,
+                     "poseCheckSeconds":  0.6870419,
+                     "ready":  5,
+                     "blocked":  6,
+                     "moves":  152,
+                     "motionSha256":  "2b01c869969f1d29b94490f6acbeeab46d677fea5c27a8c5fd2bd60d97ff581f",
+                     "seamSha256":  "3aa5331a0cf43d5023954f1bb70f26989c54a7e1e5714be520d50eef1d3748fc",
+                     "poseCheckSha256":  "943a01c29b8455461b209ef543b6ac0b665773423b06141d5359141c75f8b2b9"
+                 },
+    "optimized":  {
+                      "collisionModelSeconds":  0.7669876,
+                      "planSeconds":  23.3690401,
+                      "planAllocatedBytes":  38208960,
+                      "revalidationSeconds":  7.0398131,
+                      "poseCheckSeconds":  0.2970621,
+                      "ready":  5,
+                      "blocked":  6,
+                      "moves":  152,
+                      "motionSha256":  "2b01c869969f1d29b94490f6acbeeab46d677fea5c27a8c5fd2bd60d97ff581f",
+                      "seamSha256":  "3aa5331a0cf43d5023954f1bb70f26989c54a7e1e5714be520d50eef1d3748fc",
+                      "poseCheckSha256":  "943a01c29b8455461b209ef543b6ac0b665773423b06141d5359141c75f8b2b9"
+                  },
+    "speedup":  {
+                    "plan":  3.7961884193951124248359691933,
+                    "revalidation":  3.1157681302647083059634068978,
+                    "collisionModel":  2.2100236040321903509261427434,
+                    "allocationReductionPercent":  96.445380490576966
+                },
+    "equivalence":  {
+                        "motionCsvIdentical":  true,
+                        "seamsStatesReasonsOrderIdentical":  true,
+                        "randomized4096PoseResultsReasonsIdentical":  true,
+                        "motionSampleDegrees":  0.032,
+                        "collisionMarginMetres":  0.002,
+                        "independentlyRevalidatedMoves":  152
+                    },
+    "changes":  [
+                    "Stack scratch storage reused across all samples in each motion; no scene-global mutable cache",
+                    "Precompute nonadjacent collision pairs and original-order groups; conservative enclosing AABB rejection at link and capsule levels before unchanged narrow phase",
+                    "Stack triangle/SAT/capsule clipping temporaries; skip nonoverlapping source-mesh slices",
+                    "Per-orientation planning progress and cancellation callbacks"
+                ]
+}

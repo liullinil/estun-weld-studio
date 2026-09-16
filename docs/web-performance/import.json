@@ -1,0 +1,144 @@
+{
+  "platform": "Windows-10-10.0.26200-SP0",
+  "python": "3.11.9",
+  "repetitions": 3,
+  "method": "Alternating baseline and optimized imports in the same Python process; no document cache. Cold CLI and warm JSONL timings reported separately. Same tessellation deflections (0.18 mm / 0.18 rad), seam sampling and 0.02 mm contact tolerance.",
+  "models": [
+    {
+      "model": "original_welding_bracket",
+      "solidCount": 3,
+      "faces": 18,
+      "triangles": 36,
+      "seams": 36,
+      "beforeSeconds": [
+        0.47293960000388324,
+        0.5108592000033241,
+        0.5506889999960549
+      ],
+      "afterSeconds": [
+        0.24295949999941513,
+        0.19967750000068918,
+        0.22290670001530088
+      ],
+      "medianBeforeSeconds": 0.5108592000033241,
+      "medianAfterSeconds": 0.22290670001530088,
+      "speedup": 2.2918072896339923,
+      "identicalDocument": true
+    },
+    {
+      "model": "30_solid_weldment_assembly",
+      "solidCount": 30,
+      "faces": 180,
+      "triangles": 360,
+      "seams": 360,
+      "beforeSeconds": [
+        21.624016199988546,
+        26.83732570000575,
+        26.875012599979527
+      ],
+      "afterSeconds": [
+        4.525492699991446,
+        3.93919669999741,
+        4.606327500019688
+      ],
+      "medianBeforeSeconds": 26.83732570000575,
+      "medianAfterSeconds": 4.525492699991446,
+      "speedup": 5.9302549974407155,
+      "identicalDocument": true
+    },
+    {
+      "model": "13_solid_round_weldment",
+      "solidCount": 13,
+      "faces": 42,
+      "triangles": 3324,
+      "seams": 36,
+      "beforeSeconds": [
+        4.937493599980371,
+        5.787149200012209,
+        5.760278000001563
+      ],
+      "afterSeconds": [
+        1.5304806999920402,
+        1.539054799999576,
+        1.0163374000112526
+      ],
+      "medianBeforeSeconds": 5.760278000001563,
+      "medianAfterSeconds": 1.5304806999920402,
+      "speedup": 3.7637050895392026,
+      "identicalDocument": true
+    }
+  ],
+  "coldCLISeconds": {
+    "before": [
+      3.9937514000048395,
+      3.5764883999945596,
+      3.785121799999615
+    ],
+    "after": [
+      3.4272246999898925,
+      3.140925099985907,
+      4.610580600012327
+    ]
+  },
+  "daemonStartupSeconds": 2.3616963000094984,
+  "warmDaemonSeconds": [
+    0.37513359999866225,
+    0.27476699999533594,
+    0.30195520000415854
+  ],
+  "coldBeforeToWarmAfterSpeedup": 12.535375446249928,
+  "daemonMemory": {
+    "startupResidentMB": 209.7578125,
+    "sequentialImports": [
+      {
+        "request": 0,
+        "residentMB": 225.40234375
+      },
+      {
+        "request": 1,
+        "residentMB": 225.68359375
+      },
+      {
+        "request": 2,
+        "residentMB": 225.734375
+      },
+      {
+        "request": 3,
+        "residentMB": 225.74609375
+      },
+      {
+        "request": 4,
+        "residentMB": 225.75
+      },
+      {
+        "request": 5,
+        "residentMB": 225.7578125
+      },
+      {
+        "request": 6,
+        "residentMB": 225.765625
+      },
+      {
+        "request": 7,
+        "residentMB": 225.78515625
+      },
+      {
+        "request": 8,
+        "residentMB": 225.79296875
+      },
+      {
+        "request": 9,
+        "residentMB": 225.8046875
+      },
+      {
+        "request": 10,
+        "residentMB": 225.8046875
+      },
+      {
+        "request": 11,
+        "residentMB": 225.80859375
+      }
+    ],
+    "note": "Windows resident working set; first import is 13-solid curved weldment then 11 bracket imports. OpenCascade allocator retains a high-water mark for reuse. Native shape references are per-request."
+  }
+}
