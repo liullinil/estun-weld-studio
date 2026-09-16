@@ -12,9 +12,9 @@ The sample loads automatically. Import STEP/STP, position the workpiece with Mov
 
 Pendant controls support JOINT/WORLD/TOOL jog, home, taught points, speed override, stop and latched emergency stop. Display preferences and explicitly saved taught points are stored in browser local storage. Space stops motion, Escape latches E-stop, focus loss stops motion. Workpiece changes invalidate planning. Manual motion changes require replanning.
 
-Rendering includes ACES, original HDR reflections, two shadow-casting studio lights, ambient occlusion, bloom, arc light, sparks, smoke and cooling weld beads. Display settings adjust resolution, exposure and effects. Orbit/pan/zoom, front/right/top/home views, hideable panels, cinema, image capture and fullscreen are available.
+Rendering includes ACES, original HDR reflections, two shadow-casting studio lights, ambient occlusion, bloom, arc light, sparks, smoke and cooling weld beads. Display settings adjust resolution, exposure and effects. The view cube is ported from SwissCAM: transparent 104-pixel control, orientation synchronized with the camera, all six faces, twelve edges and eight corners, hover highlighting, and drag-to-orbit. Focus it for F/B/T/D/L/R face shortcuts, arrow-key rotation and Home/Enter isometric. Space and Escape retain the robot's stop controls. Hideable panels, cinema, image capture and fullscreen are available.
 
-The browser rendering engine differs from Godot Forward+, so the lighting and postprocessing are not pixel-identical. The view cube provides the three principal views and home, rather than the desktop's 26 edge/corner orientations. Web import is limited to **64 MB**, and tessellated output to 60 MB. CAD import and planning require the server. The native planner accepts one active job at a time and has a 10-minute timeout. Uploaded STEP files and intermediate geometry are temporary and removed after import.
+The browser rendering engine differs from Godot Forward+, so the lighting and postprocessing are not pixel-identical. Web import is limited to **64 MB**, and tessellated output to 60 MB. CAD import and planning require the server. The native planner accepts one active job at a time and has a 10-minute timeout. Uploaded STEP files and intermediate geometry are temporary and removed after import.
 
 This remains an offline simulator. Sampled native collision planning is heuristic; it does not prove continuous collision freedom. Taught/manual jog motions are not collision-validated. The application has no hardware communication. Exported trajectories require calibrated cell data and a controller postprocessor before physical use.
 
@@ -44,6 +44,7 @@ Open `http://127.0.0.1:18740/hyper/`. For development use `npm run dev` with the
 
 - `/srv/hyper/releases/20260916` — packaged native core, frontend and Docker build.
 - Docker image `estun-hyper:20260916-final2`; container `hyper-app-v2`.
+- View-cube frontend update: `/srv/hyper/releases/20260916-view-cube`, reproducible image `estun-hyper:20260916-view-cube`. The running container received hashed assets followed by an atomic HTML replacement, preserving active planner jobs; use this newer image when recreating it.
 - Internal port 18740, Docker network `swisscam-studio_default`; no additional public port.
 - Caddy `handle_path /hyper/*` forwards to `hyper-app-v2:18740`. Existing fallback still forwards to `web:80`.
 - Native Godot bridge stays on container loopback 18741. Node gateway handles uploads, API proxy and static assets.

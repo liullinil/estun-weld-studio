@@ -8,13 +8,15 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { SSAOPass } from 'three/addons/postprocessing/SSAOPass.js';
 import { HOME, TOOL, jointMatrix } from './kinematics.js';
+import { createCameraNavigation } from './camera-navigation.js';
 
 export function createStudio(container,onTransform,onSeam){
   const scene=new T.Scene();scene.background=new T.Color('#242b33');scene.fog=new T.FogExp2('#343d47',.025);
   const renderer=new T.WebGLRenderer({antialias:true,alpha:false,preserveDrawingBuffer:true,powerPreference:'high-performance'});
   renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.shadowMap.enabled=true;renderer.shadowMap.type=T.PCFSoftShadowMap;
   renderer.toneMapping=T.ACESFilmicToneMapping;renderer.toneMappingExposure=.92;container.append(renderer.domElement);
-  const camera=new T.PerspectiveCamera(38,1,.06,50),orbit=new OrbitControls(camera,renderer.domElement);orbit.enableDamping=true;orbit.dampingFactor=.12;orbit.minDistance=.5;orbit.maxDistance=15;orbit.maxPolarAngle=Math.PI*.93;orbit.mouseButtons={LEFT:T.MOUSE.ROTATE,MIDDLE:T.MOUSE.PAN,RIGHT:T.MOUSE.ROTATE};
+  const camera=new T.PerspectiveCamera(38,1,.06,50),orbit=new OrbitControls(camera,renderer.domElement);orbit.enableDamping=true;orbit.dampingFactor=.12;orbit.minDistance=.5;orbit.maxDistance=15;orbit.maxPolarAngle=Math.PI;orbit.mouseButtons={LEFT:T.MOUSE.ROTATE,MIDDLE:T.MOUSE.PAN,RIGHT:T.MOUSE.ROTATE};
+  const navigation=createCameraNavigation(camera,orbit);
   const composer=new EffectComposer(renderer,new T.WebGLRenderTarget(1,1,{type:T.HalfFloatType,samples:4}));composer.addPass(new RenderPass(scene,camera));
   const ao=new SSAOPass(scene,camera,1,1);ao.kernelRadius=.18;ao.minDistance=.00002;ao.maxDistance=.0036;composer.addPass(ao);
   const bloom=new UnrealBloomPass(new T.Vector2(1,1),.20,.25,1.3);composer.addPass(bloom);composer.addPass(new OutputPass());
@@ -83,7 +85,7 @@ export function createStudio(container,onTransform,onSeam){
     smoke.forEach((s,i)=>{const age=(time*.65+i/14)%1;s.position.copy(p).add(new T.Vector3(Math.sin(i*12)*age*.03,age*.27,Math.cos(i*12)*age*.03));s.scale.setScalar(.02+age*.14);s.material.opacity=arcOn&&settings.smoke?.22*Math.sin(age*Math.PI):0;});
     if(settings.trace&&moving){if(!trail.length||trail.at(-1).distanceTo(p)>.006){trail.push(p);if(trail.length>1600)trail.shift();trailLine.geometry.dispose();trailLine.geometry=new T.BufferGeometry().setFromPoints(trail);}}trailLine.visible=settings.trace;composer.render();
   }
-  return {renderer,scene,camera,orbit,part,transform,tcp,loadRobot,loadPart,seams,render,fit,clearEffects,
+  return {renderer,scene,camera,orbit,navigation,part,transform,tcp,loadRobot,loadPart,seams,render,fit,clearEffects,
     setAngles(a){joints.forEach((j,i)=>{j.matrix.copy(jointMatrix(i,a[i]));j.matrixWorldNeedsUpdate=true;});},
     setArc(on){arcOn=on;},setAxes(on){axes.visible=on;},setTrace(on){settings.trace=on;},
     setMode(mode){transform.setMode(mode);},setGizmo(on){transform.enabled=on;transform.getHelper().visible=on;},
