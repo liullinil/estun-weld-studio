@@ -197,7 +197,7 @@ public partial class WebBridge : Node
             }
             else
             {
-                collision = input.Document == null ? new CollisionScene(Array.Empty<Vector3>(), _capsules, staticTriangles: _fixtures, robotTriangles: _robotTriangles) : MakeCollision(Prepare(input));
+                collision = input.Document == null ? new CollisionScene(Array.Empty<Vector3>(), _capsules, staticTriangles: _fixtures, robotTriangles: _robotTriangles, toolTip: WeldTorch.ToolTransform.Origin) : MakeCollision(Prepare(input));
                 sceneId = Guid.NewGuid().ToString("N");
                 lock (_collisionScenesGate)
                 {
@@ -327,7 +327,7 @@ public partial class WebBridge : Node
         return result;
     }
 
-    private CollisionScene MakeCollision(Prepared input) => new(input.Document.Indices.Select(i => input.PartTransform * input.Document.Vertices[i]).ToArray(), _capsules, staticTriangles: _fixtures, robotTriangles: _robotTriangles);
+    private CollisionScene MakeCollision(Prepared input) => new(input.Document.Indices.Select(i => input.PartTransform * input.Document.Vertices[i]).ToArray(), _capsules, staticTriangles: _fixtures, robotTriangles: _robotTriangles, toolTip: WeldTorch.ToolTransform.Origin);
 
     // Caller holds _collisionScenesGate. Cached scenes are immutable and checks use per-call scratch memory.
     private void PruneCollisionScenes()

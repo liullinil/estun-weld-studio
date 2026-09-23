@@ -194,7 +194,7 @@ public partial class RobotPostprocessorChecks : Node
         var plinth = new CylinderMesh { TopRadius = .7f, BottomRadius = .7f, Height = .2f, RadialSegments = 64 }.GetFaces().Select(p => p + new Vector3(0, -.11f, 0)).ToArray();
         var doc = await new CadImportService().ImportAsync(ProjectSettings.GlobalizePath("res://Assets/Samples/WeldingBracket.step"));
         var placement = new Transform3D(Basis.Identity, new Vector3(.85f, .15f, 0) - new Vector3(doc.Bounds.GetCenter().X, doc.Bounds.Position.Y, doc.Bounds.GetCenter().Z));
-        var collision = new CollisionScene(doc.Indices.Select(i => placement * doc.Vertices[i]).ToArray(), capsules, staticTriangles: plinth);
+        var collision = new CollisionScene(doc.Indices.Select(i => placement * doc.Vertices[i]).ToArray(), capsules, staticTriangles: plinth, toolTip: WeldTorch.ToolTransform.Origin);
         var request = new WeldPlanRequest { Seams = doc.Seams.Where(s => s.Kind == "Part contact").ToArray(), PartTransform = placement, ToolTransform = WeldTorch.ToolTransform, Collision = collision, PartName = doc.Name };
         using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(4));
         var watch = System.Diagnostics.Stopwatch.StartNew();

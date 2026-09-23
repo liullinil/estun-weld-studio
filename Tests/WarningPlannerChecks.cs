@@ -28,10 +28,16 @@ public partial class WarningPlannerChecks : Node
 
             WeldProgram strict = WeldPlanner.Plan(Request(false, collision, seam), cancellation.Token);
             Require(strict.Motions.Count == 0 && strict.BlockedCount == 1, "Default strict planner rejects colliding start pose");
-            WeldProgram preview = WeldPlanner.Plan(Request(true, collision, seam), cancellation.Token);
+            int safeOrientationAttempts = 0;
+            WeldProgram preview = WeldPlanner.Plan(Request(true, collision, seam), cancellation.Token,
+                (_, message) => { if (message.Contains(" · orientation ")) safeOrientationAttempts++; });
             Require(preview.WarningCount == 1 && preview.BlockedCount == 0 && preview.Motions.Any(m => m.ArcOn), "Collision preview traverses warning seam");
             Require(preview.Seams[0].HasCollision && preview.Seams[0].Reason.Contains("workpiece"), "Warning identifies the colliding object");
             Require(!preview.Seams[0].Partial && preview.Seams[0].Coverage > .999f, "Fully reachable collision seam retains complete coverage");
+            Require(preview.Seams[0].OrientationStrategy == "CAD bisector; work 0 deg; travel 0 deg; roll 0 deg" && !preview.Seams[0].AutoOriented,
+                "Warning fallback reports the actual nominal work, travel and roll angles");
+            Require(preview.Seams[0].OrientationAttempts > safeOrientationAttempts,
+                "Orientation attempt count includes the warning fallback search");
             Require(!preview.Motions[^1].ArcOn, "Warning trajectory retracts or stops with the torch off");
             Require(preview.ToJson().Contains("collision freedom and complete seam coverage are not guaranteed"), "Warning JSON does not claim collision-free validation");
 

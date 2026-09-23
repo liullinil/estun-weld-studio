@@ -40,7 +40,8 @@ public static class WeavePlanner
         {
             Id = s.Id, Points = s.Points, State = s.State, Reason = s.Reason, Reversed = s.Reversed,
             Length = s.Length, Order = s.Order, HasCollision = s.HasCollision, Partial = s.Partial,
-            ProcessedLength = s.ProcessedLength, WarningReasons = (string[])s.WarningReasons.Clone()
+            ProcessedLength = s.ProcessedLength, WarningReasons = (string[])s.WarningReasons.Clone(),
+            OrientationStrategy = s.OrientationStrategy, OrientationAttempts = s.OrientationAttempts, AutoOriented = s.AutoOriented
         }));
         for (int start = 0; start < source.Motions.Count;)
         {

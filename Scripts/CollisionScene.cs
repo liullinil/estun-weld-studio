@@ -23,6 +23,7 @@ public sealed class CollisionScene
     private readonly RobotCapsule[] _capsules;
     private readonly Transform3D[] _rest;
     private readonly float _floorY;
+    private readonly Vector3? _toolTip;
     private readonly CollisionPair[] _selfPairs;
     private readonly CollisionPairGroup[] _selfPairGroups;
     private readonly SourceSelfGeometry? _sourceSelf;
@@ -44,7 +45,7 @@ public sealed class CollisionScene
 
     public CollisionScene(Vector3[] partTriangles, IEnumerable<RobotCapsule> robotCapsules,
         Transform3D[]? rest = null, float floorY = -.22f, float margin = .002f, Vector3[]? staticTriangles = null,
-        IReadOnlyDictionary<int, Vector3[]>? robotTriangles = null)
+        IReadOnlyDictionary<int, Vector3[]>? robotTriangles = null, Vector3? toolTip = null)
     {
         _part = new TriangleBvh(partTriangles);
         _fixtures = new TriangleBvh(staticTriangles ?? Array.Empty<Vector3>());
@@ -53,6 +54,7 @@ public sealed class CollisionScene
             throw new ArgumentException("Invalid robot collision capsule.");
         _rest = rest ?? RobotKinematics.StandardRestTransforms();
         _floorY = floorY;
+        _toolTip = toolTip;
         Margin = Math.Max(0, margin);
         // Base and A2 are not adjacent and must still collide. Their curved source housings
         // leave gaps inside the slab boxes, however, so confirm that pair using the CAD mesh.
@@ -80,6 +82,31 @@ public sealed class CollisionScene
     }
 
     public bool Check(float[] angles, out string reason) => CheckPose(angles, out reason, null);
+
+    /// <summary>Cheap rejection for a proposed torch pose before IK. The exact
+    /// Link7 floor/part/fixture tests are shared with full checking; a clear result
+    /// is only a prefilter and does not validate robot links or self collisions.</summary>
+    public bool CheckToolPose(Transform3D tcp, Transform3D toolTransform, out string reason)
+    {
+        if (tcp.Origin.Y < _floorY) { reason = "Torch tip / floor collision"; return false; }
+        if (_part.ContainsPoint(tcp.Origin)) { reason = "Torch tip inside workpiece"; return false; }
+        if (_fixtures.ContainsPoint(tcp.Origin)) { reason = "Torch tip inside fixture"; return false; }
+        Transform3D flange = tcp * toolTransform.AffineInverse();
+        foreach (RobotCapsule local in _capsules)
+        {
+            if (local.Link != 7) continue;
+            Vector3 a = flange * local.A, b = flange * local.B;
+            bool hasBox = local.LocalBounds.HasValue;
+            OrientedBounds box = hasBox ? new OrientedBounds(local.LocalBounds!.Value, flange) : default;
+            float floor = hasBox ? box.MinimumY : Math.Min(a.Y, b.Y) - local.Radius;
+            if (floor < _floorY + Margin) { reason = "Torch / floor collision"; return false; }
+            if (hasBox ? _part.IntersectsBox(box, Margin) : _part.IntersectsCapsule(a, b, local.Radius + Margin))
+            { reason = "Torch / workpiece collision"; return false; }
+            if (hasBox ? _fixtures.IntersectsBox(box, Margin) : _fixtures.IntersectsCapsule(a, b, local.Radius + Margin))
+            { reason = "Torch / fixture collision"; return false; }
+        }
+        reason = ""; return true;
+    }
 
     /// <summary>All implicated links for pose visualization, using the exact same narrow phase and adjacency exclusions as planning.</summary>
     public bool CheckDetailed(float[] angles, out string reason, out CollisionContact[] contacts)
@@ -131,6 +158,19 @@ public sealed class CollisionScene
             Vector3 high = c.A.Max(c.B) + padding;
             bounds[i] = new Aabb(low, high - low);
             linkMin[c.Link] = linkMin[c.Link].Min(low); linkMax[c.Link] = linkMax[c.Link].Max(high);
+        }
+        // The wire tip sits at the process arc gap; do not apply the body clearance
+        // margin here. Containment must still be checked at every swept pose, not
+        // just the few representative poses used to reject orientation candidates.
+        if (_toolTip is Vector3 localTip)
+        {
+            Vector3 tip = transforms[6] * localTip;
+            if (tip.Y < _floorY)
+            { reason = "Torch tip / floor collision"; if (contacts == null) return false; contacts.Add(new("floor", reason, 7)); }
+            if (_part.ContainsPoint(tip))
+            { reason = "Torch tip inside workpiece"; if (contacts == null) return false; contacts.Add(new("workpiece", reason, 7)); }
+            if (_fixtures.ContainsPoint(tip))
+            { reason = "Torch tip inside fixture"; if (contacts == null) return false; contacts.Add(new("fixture", reason, 7)); }
         }
         bool? baseShoulderHit = null;
         foreach (CollisionPairGroup group in _selfPairGroups)

@@ -20,6 +20,8 @@ public partial class CollisionDetailChecks : Node
             float[] home = RobotController.HomeAngles;
             Transform3D[] rest = RobotKinematics.StandardRestTransforms();
             Transform3D[] transforms = CollisionScene.LinkTransforms(home, rest);
+            CheckToolPrefilter(rest);
+            CheckTipCollision(rest);
             Vector3 centre = new(.5f, .5f, .5f);
             RobotCapsule Capsule(int link)
             {
@@ -62,6 +64,41 @@ public partial class CollisionDetailChecks : Node
             GetTree().Quit(0);
         }
         catch (Exception exception) { GD.PrintErr(exception); GetTree().Quit(1); }
+    }
+
+    private void CheckToolPrefilter(Transform3D[] rest)
+    {
+        var toolOnly = new CollisionScene(Array.Empty<Vector3>(), WeldTorch.CollisionVolumes(), rest,
+            staticTriangles: new BoxMesh { Size = new Vector3(.4f,.2f,.4f) }.GetFaces().Select(p=>p+Vector3.Down*.1f).ToArray(), toolTip: WeldTorch.ToolTransform.Origin);
+        var random = new Random(3094);
+        for (int i=0;i<100;i++)
+        {
+            float[] q = Enumerable.Range(0,6).Select(j=>Mathf.Lerp(RobotController.JointMinimum[j],RobotController.JointMaximum[j],(float)random.NextDouble())).ToArray();
+            Transform3D tcp = RobotKinematics.Forward(q,rest,WeldTorch.ToolTransform);
+            bool full=toolOnly.Check(q,out string allReason),prefilter=toolOnly.CheckToolPose(tcp,WeldTorch.ToolTransform,out string toolReason);
+            Require(full == prefilter, "Torch prefilter and full pose checking agree including an embedded tip");
+        }
+    }
+
+    private void CheckTipCollision(Transform3D[] rest)
+    {
+        float[] home = RobotController.HomeAngles;
+        Transform3D tcp = RobotKinematics.Forward(home, rest, WeldTorch.ToolTransform);
+        Vector3[] obstacle = new BoxMesh { Size = Vector3.One * .004f }.GetFaces().Select(p => p + tcp.Origin).ToArray();
+        var part = new CollisionScene(obstacle, WeldTorch.CollisionVolumes(), rest, toolTip: WeldTorch.ToolTransform.Origin);
+        Require(!part.CheckDetailed(home, out _, out var contacts) && contacts.Any(c => c.Kind == "workpiece" && c.LinkA == 7),
+            "An obstacle containing only the tip is reported as a torch/workpiece collision");
+        var fixture = new CollisionScene(Array.Empty<Vector3>(), WeldTorch.CollisionVolumes(), rest, staticTriangles: obstacle, toolTip: WeldTorch.ToolTransform.Origin);
+        Require(!fixture.CheckDetailed(home, out _, out contacts) && contacts.Any(c => c.Kind == "fixture" && c.LinkA == 7),
+            "An obstacle containing only the tip identifies the fixture and torch");
+
+        float[] before = (float[])home.Clone(), after = (float[])home.Clone();
+        before[0] -= 2; after[0] += 2;
+        Require(fixture.Check(before, out _) && fixture.Check(after, out _), "Tip sweep regression has clear endpoints");
+        Require(!fixture.CheckMotion(before, after, out string reason) && reason == "Torch tip inside fixture",
+            "Swept checks detect a tip-only collision between clear endpoint poses");
+        var clear = new CollisionScene(Array.Empty<Vector3>(), WeldTorch.CollisionVolumes(), rest, toolTip: WeldTorch.ToolTransform.Origin);
+        Require(clear.CheckMotion(before, after, out _), "The same tip motion remains clear without the fixture");
     }
 
     private void CheckSourceBaseShoulder()

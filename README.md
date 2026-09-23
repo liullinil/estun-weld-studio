@@ -30,7 +30,7 @@ Workpiece transformations, recognition changes and seam removal invalidate the o
 
 ## What the planner checks
 
-Route ordering uses nearest endpoints and 2-opt improvement. The planner tests multiple torch rolls, approach inclinations and IK branches, samples seam geometry and normals, checks approach/retraction, and searches lifted and side transfer alternatives.
+Route ordering uses nearest endpoints and 2-opt improvement. The planner automatically searches signed face bisectors, work/travel angles, torch rolls and IK branches, samples seam geometry and normals, checks approach/retraction, and searches lifted and side transfer alternatives. Incorrect imported normal signs no longer fix the torch to an inward approach. See [automatic orientation and validation](docs/AUTO-ORIENTATION.md).
 
 Collision checks include the workpiece, non-adjacent robot links, torch, mounting platform and floor. Actual source-mesh slices supply conservative robot bounds. Capsule broad phase and oriented-box narrow phase are combined with a CAD triangle BVH and solid-containment checks. Motion is sampled at maximum summed joint increments of **0.032 degrees**, with a **2 mm margin**. Playback follows that same interpolation and rechecks each applied pose. Adjacent bearing interfaces are intentionally excluded from self-collision checks.
 

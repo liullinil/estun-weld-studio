@@ -234,7 +234,7 @@ public partial class WeldingWorkspace : Node
             var result = await Task.Run(() =>
             {
                 _capsules ??= CollisionScene.CreateRobotCapsules(_robotTriangles).Concat(WeldTorch.CollisionVolumes()).ToArray();
-                var collision = new CollisionScene(triangles, _capsules, rest, staticTriangles: fixtures, robotTriangles: _robotTriangles);
+                var collision = new CollisionScene(triangles, _capsules, rest, staticTriangles: fixtures, robotTriangles: _robotTriangles, toolTip: WeldTorch.ToolTransform.Origin);
                 var request = new WeldPlanRequest { Seams = selected, PartTransform = transform, JointRest = rest, ToolTransform = tool, StartAngles = start, Collision = collision, PartName = name, AllowWarningPaths = true };
                 var program = WeldPlanner.Plan(request, token, (p, s) => _messages.Enqueue((p * 70, s)));
                 program = WeavePlanner.Apply(program, request, weaving, token, (p, s) => _messages.Enqueue((70 + p * 10, s)));

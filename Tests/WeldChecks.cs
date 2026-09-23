@@ -23,7 +23,7 @@ public partial class WeldChecks : Node
             var source = ReadSource();
             var capsules = CollisionScene.CreateRobotCapsules(source).Concat(TorchCapsules()).ToArray();
             var plinth = new CylinderMesh { TopRadius = .7f, BottomRadius = .7f, Height = .2f, RadialSegments = 64 }.GetFaces().Select(p => p + new Vector3(0, -.11f, 0)).ToArray();
-            var scene = new CollisionScene(Array.Empty<Vector3>(), capsules, staticTriangles: plinth);
+            var scene = new CollisionScene(Array.Empty<Vector3>(), capsules, staticTriangles: plinth, toolTip: WeldTorch.ToolTransform.Origin);
             GD.Print($"Collision model: {capsules.Length} capsules");
             bool homeClear = scene.Check(RobotController.HomeAngles, out string homeReason);
             GD.Print($"Home collision: {!homeClear} {homeReason}");
@@ -43,7 +43,7 @@ public partial class WeldChecks : Node
             Require(document.TriangleCount > 10 && document.Seams.Count > 0, "Actual STEP imports mesh and BRep seam candidates");
             var placement = new Transform3D(Basis.Identity, new Vector3(.85f, .15f, 0) - new Vector3(document.Bounds.GetCenter().X, document.Bounds.Position.Y, document.Bounds.GetCenter().Z));
             var triangles = document.Indices.Select(i => placement * document.Vertices[i]).ToArray();
-            scene = new CollisionScene(triangles, capsules, staticTriangles: plinth);
+            scene = new CollisionScene(triangles, capsules, staticTriangles: plinth, toolTip: WeldTorch.ToolTransform.Origin);
             Require(scene.Check(RobotController.HomeAngles, out homeReason), "Default sample placement leaves home clear: " + homeReason);
             var selected = document.Seams.Where(s => s.Kind == "Part contact").ToArray();
             Require(selected.Length > 0, "Sample has contact seams");

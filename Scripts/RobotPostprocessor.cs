@@ -163,6 +163,7 @@ public static class RobotPostprocessor
             validation = "Original joint transfers retained. Cartesian primitives fitted against densely sampled source FK and checked for collision. Warning seams retain the original joint trajectory, including explicitly reported collisions and partial coverage; they are not collision-free. Sampled offline geometry only.",
             warningSeams = program.Seams.Where(s => s.State == WeldSeamState.Warning).Select(s => new { id = s.Id, reason = s.Reason, hasCollision = s.HasCollision, partial = s.Partial, coverage = s.Coverage }),
             orientation = "Only approximately constant tool orientation is compressed; the supplied manual does not specify general movC orientation interpolation.",
+            approachSelection = program.Seams.Select(s => new { id = s.Id, strategy = s.OrientationStrategy, attempts = s.OrientationAttempts, adjusted = s.AutoOriented }),
             controllerRequirements = "Controller must implement the supplied CODROID Lua dialect, ESTUN S20-180 Pro model and matching joint zeros/directions, tool, base/workpiece calibration. No controller calibration is inferred or overwritten.",
             timing = "Nominal feed from planned duration; controller acceleration and exact-stop timing may differ from simulation.",
             initialJoints = program.StartAngles, startGuardToleranceDegrees = .2f,
@@ -327,6 +328,8 @@ public static class RobotPostprocessor
             {
                 seam = p.SeamId; text.Append("-- Seam: ").AppendLine(seam.Replace('\r', ' ').Replace('\n', ' '));
                 PlannedSeam? planned = program.Seams.FirstOrDefault(s => s.Id == seam);
+                if (planned?.AutoOriented == true)
+                    text.Append("-- Automatic tool orientation: ").AppendLine(planned.OrientationStrategy.Replace('\r', ' ').Replace('\n', ' '));
                 if (planned?.State == WeldSeamState.Warning)
                 {
                     text.Append("-- WARNING: ").AppendLine(planned.Reason.Replace('\r', ' ').Replace('\n', ' '));

@@ -42,6 +42,12 @@ This remains an offline simulator. Sampled native collision planning does not pr
 
 ## Local development
 
+The shared native planner automatically corrects imported face-normal signs and
+searches alternative work/travel angles and wrist rolls before using a warning
+preview. Whole sampled transfers, welds and retractions remain collision-checked,
+including containment of the torch tip. Selected approach metadata survives
+weaving and export. See [automatic orientation validation](../docs/AUTO-ORIENTATION.md).
+
 From the repository root, build the C# project with the bundled .NET SDK and start the optional bridge scene:
 
 ```powershell
@@ -65,10 +71,10 @@ Open `http://127.0.0.1:18740/hyper/`. For development use `npm run dev` with the
 ## Server layout
 
 - `/srv/hyper/releases/20260916` — packaged native core, frontend and Docker build.
-- Current Docker image `estun-hyper:20260917-iges-healing`; container `hyper-app-v8`.
+- Current Docker image `estun-hyper:20260917-auto-orientation-v12`; container `hyper-app-v12`.
 - Older frontend-only releases remain at `/srv/hyper/releases/20260916-view-cube` and `/srv/hyper/releases/20260916-workspace` for rollback; the current complete release supersedes them.
 - Internal port 18740, Docker network `swisscam-studio_default`; no additional public port.
-- Complete base release: `/srv/hyper/releases/20260916-desktop`; current importer/frontend patch: `/srv/hyper/releases/20260917-iges-healing`. Caddy `handle_path /hyper/*` forwards to `hyper-app-v8:18740`; the existing fallback still forwards to `web:80`. `/srv/hyper/downloads` is mounted read-only as the desktop download directory.
+- Complete current release: `/srv/hyper/releases/20260917-auto-orientation-v12`. Caddy `handle_path /hyper/*` forwards to `hyper-app-v12:18740`; the existing fallback still forwards to `web:80`. `/srv/hyper/downloads` is mounted read-only as the desktop download directory. Prior containers/images and `/srv/hyper/Caddyfile.before-orientation-v12` are retained for rollback.
 - Native Godot bridge stays on container loopback 18741. Node gateway handles uploads, API proxy and static assets.
 - Container limits: 2,300 MB memory, 1.5 CPU, 256 processes; restart unless stopped.
 - `/srv/hyper/Caddyfile.before-hyper` is the original HTTPS routing backup. `/srv/hyper/root-before.html` and `root-after.html` record unchanged root content.

@@ -27,7 +27,39 @@ public static class WeldPlanner
         public bool Partial;
         public bool HasCollision;
         public float ProcessedLength;
+        public string OrientationStrategy = "CAD bisector";
+        public bool AutoOriented;
         public HashSet<string> Warnings { get; } = new();
+    }
+
+    private readonly record struct Orientation(int Sector, float Work, float Lean, float Roll, bool Reverse)
+    {
+        public bool Adjusted => Sector != 0 || Work != 0 || Lean != 0;
+        public string Description => $"{new[] { "CAD bisector", "Opposite bisector", "Alternate face bisector", "Opposite alternate bisector" }[Sector]}; work {Work:+0.#;-0.#;0} deg; travel {Lean:+0.#;-0.#;0} deg; roll {Roll:0} deg";
+    }
+
+    // The same signed face field and work/travel angles follow the entire seam. We never
+    // pick unrelated free normals at successive points, which would flip the torch mid-weld.
+    private static IEnumerable<Orientation> Orientations(bool preferredReverse)
+    {
+        bool[] directions = { preferredReverse, !preferredReverse };
+        float[] rolls = { 0, 180, 90, -90 };
+        // Preserve the existing useful nominal choices before correcting imported face signs.
+        foreach (int sector in new[] { 0, 1, 2, 3 })
+            foreach (bool reverse in directions)
+            {
+                foreach (float roll in rolls) yield return new(sector, 0, 0, roll, reverse);
+                foreach (float lean in new[] { -12f, 12f }) yield return new(sector, 0, lean, 0, reverse);
+            }
+        // Coarse work-angle cone followed by half-step refinement, not just four cardinal normals.
+        foreach (float work in new[] { -15f, 15f, -30f, 30f, -7.5f, 7.5f, -22.5f, 22.5f })
+            foreach (int sector in new[] { 0, 1, 2, 3 })
+                foreach (bool reverse in directions)
+                    foreach (float roll in rolls) yield return new(sector, work, 0, roll, reverse);
+        foreach (float work in new[] { -15f, 15f })
+            foreach (int sector in new[] { 0, 1, 2, 3 })
+                foreach (bool reverse in directions)
+                    foreach (float lean in new[] { -12f, 12f }) yield return new(sector, work, lean, 0, reverse);
     }
 
     public static WeldProgram Plan(WeldPlanRequest request, CancellationToken cancellation = default, Action<float, string>? progress = null)
@@ -46,7 +78,8 @@ public static class WeldPlanner
             if (points.Length < 2 || result.Length < .0005f || points.Any(p => !p.IsFinite())) { result.Reason = "Seam is too short or invalid"; continue; }
             route.Add(new RouteSeam { Source = seam, Result = result, Points = points });
         }
-        if (!request.Collision.Check(request.StartAngles, out string startReason) &&
+        bool clearStart = request.Collision.Check(request.StartAngles, out string startReason);
+        if (!clearStart &&
             (!request.AllowWarningPaths || !WithinLimits(request.StartAngles)))
         {
             foreach (RouteSeam seam in route) { seam.Result.State = WeldSeamState.TransferBlocked; seam.Result.Reason = "Start pose: " + startReason; }
@@ -65,40 +98,37 @@ public static class WeldPlanner
             WeldSeamState state = WeldSeamState.Unreachable;
             Candidate? candidate = null;
             int orientationAttempt = 0;
-            void ReportAttempt()
+            Orientation[] orientations = Orientations(seam.Reverse).ToArray();
+            var fields = new Dictionary<(int Sector, bool Reverse), (Vector3[] Points, Vector3[] Approaches)>();
+            // A colliding current pose precludes a wholly safe transfer. In preview mode we
+            // can still choose a safe weld orientation, keeping its entry explicitly warned.
+            bool clearCurrent = request.Collision.Check(current, out _);
+            foreach (Orientation orientation in orientations)
             {
                 cancellation.ThrowIfCancellationRequested();
-                progress?.Invoke((index + orientationAttempt / 12f) / Math.Max(1, route.Count),
-                    $"Checking {seam.Source.Id} ({index + 1}/{route.Count}) · orientation {++orientationAttempt}/12");
-            }
-            foreach (bool reverse in new[] { seam.Reverse, !seam.Reverse })
-            {
-                SampleSeam(request, seam.Source, reverse, out Vector3[] points, out Vector3[] approaches);
-                // Face normals determine the 45-degree fillet bisector. Roll chooses a wrist branch without changing the arc direction.
-                foreach (float roll in new[] { 0f, 180f, 90f, -90f })
+                orientationAttempt++;
+                progress?.Invoke((index + .9f * orientationAttempt / orientations.Length) / Math.Max(1, route.Count),
+                    $"Checking {seam.Source.Id} ({index + 1}/{route.Count}) · orientation {orientationAttempt}/{orientations.Length}");
+                var key = (orientation.Sector, orientation.Reverse);
+                if (!fields.TryGetValue(key, out var field))
                 {
-                    ReportAttempt();
-                    candidate = TrySeam(request, points, approaches, roll, current, seam.Source.Id, cancellation, out string failure, out WeldSeamState failureState);
-                    if (candidate != null) break;
-                    if ((int)failureState >= (int)state) { reason = failure; state = failureState; }
+                    SampleSeam(request, seam.Source, orientation.Reverse, out Vector3[] p, out Vector3[] a, orientation.Sector);
+                    fields[key] = field = (p, a);
                 }
-                if (candidate != null) { seam.Result.Reversed = reverse; break; }
-                // A small push/pull inclination can clear the bent torch neck while preserving the work angle.
-                foreach (float lean in new[] { -12f, 12f })
+                Vector3[] approaches = Incline(field.Points, field.Approaches, orientation.Work, orientation.Lean);
+                candidate = TrySeam(request, field.Points, approaches, orientation.Roll, current, seam.Source.Id, cancellation,
+                    out string failure, out WeldSeamState failureState, allowCollidingEntry: !clearCurrent && request.AllowWarningPaths);
+                if (candidate != null)
                 {
-                    ReportAttempt();
-                    Vector3[] inclined = approaches.Select((approach, i) =>
-                    {
-                        Vector3 tangent = (points[Math.Min(i + 1, points.Length - 1)] - points[Math.Max(0, i - 1)]).Normalized();
-                        return (approach * Mathf.Cos(Mathf.DegToRad(lean)) + tangent * Mathf.Sin(Mathf.DegToRad(lean))).Normalized();
-                    }).ToArray();
-                    candidate = TrySeam(request, points, inclined, 0, current, seam.Source.Id, cancellation, out string failure, out WeldSeamState failureState);
-                    if (candidate != null) { seam.Result.Reversed = reverse; break; }
-                    if ((int)failureState >= (int)state) { reason = failure; state = failureState; }
+                    seam.Result.Reversed = orientation.Reverse;
+                    candidate.OrientationStrategy = orientation.Description;
+                    candidate.AutoOriented = orientation.Adjusted;
+                    break;
                 }
-                if (candidate != null) break;
+                if ((int)failureState >= (int)state) { reason = failure; state = failureState; }
             }
-            bool warningPath = false;
+            seam.Result.OrientationAttempts = orientationAttempt;
+            bool warningPath = candidate?.HasCollision == true;
             if (candidate == null && request.AllowWarningPaths)
             {
                 progress?.Invoke((index + .92f) / Math.Max(1, route.Count), $"Finding reachable preview for {seam.Source.Id}");
@@ -109,9 +139,12 @@ public static class WeldPlanner
             seam.Result.ProcessedLength = warningPath ? candidate.ProcessedLength : seam.Result.Length;
             seam.Result.Partial = candidate.Partial;
             seam.Result.HasCollision = candidate.HasCollision;
+            seam.Result.OrientationStrategy = candidate.OrientationStrategy;
+            seam.Result.AutoOriented = candidate.AutoOriented;
             seam.Result.WarningReasons = candidate.Warnings.ToArray();
             seam.Result.State = warningPath ? WeldSeamState.Warning : WeldSeamState.Ready;
-            seam.Result.Reason = warningPath ? string.Join("; ", candidate.Warnings) : "Six-axis path and transfers validated";
+            seam.Result.Reason = warningPath ? string.Join("; ", candidate.Warnings) : candidate.AutoOriented
+                ? "Automatic torch orientation: six-axis path and transfers validated" : "Six-axis path and transfers validated";
             seam.Result.Order = ++ready;
             program.Motions.AddRange(candidate.Entry);
             program.Motions.AddRange(candidate.Weld);
@@ -134,6 +167,8 @@ public static class WeldPlanner
             foreach ((float roll, float lean) in new[] { (0f, 0f), (180f, 0f), (90f, 0f), (-90f, 0f), (0f, -12f), (0f, 12f) })
             {
                 cancellation.ThrowIfCancellationRequested();
+                var orientation = new Orientation(0, 0, lean, roll, reverse);
+                seam.Result.OrientationAttempts++;
                 var poses = new Transform3D[points.Length];
                 for (int i = 0; i < points.Length; i++)
                 {
@@ -144,6 +179,8 @@ public static class WeldPlanner
                 }
                 Candidate? candidate = LongestReachableRun(request, poses, points, current, seam.Source.Id, cancellation);
                 if (candidate == null || (best != null && candidate.ProcessedLength <= best.ProcessedLength + .00001f)) continue;
+                candidate.OrientationStrategy = orientation.Description;
+                candidate.AutoOriented = orientation.Adjusted;
                 best = candidate; bestReverse = reverse;
                 if (!best.Partial) break;
             }
@@ -264,7 +301,7 @@ public static class WeldPlanner
         float.IsFinite(angle) && angle >= RobotController.JointMinimum[i] && angle <= RobotController.JointMaximum[i]).All(valid => valid);
 
     private static Candidate? TrySeam(WeldPlanRequest request, Vector3[] points, Vector3[] approaches, float roll,
-        float[] current, string seamId, CancellationToken cancellation, out string reason, out WeldSeamState state)
+        float[] current, string seamId, CancellationToken cancellation, out string reason, out WeldSeamState state, bool allowCollidingEntry = false)
     {
         reason = "No six-axis solution at the seam"; state = WeldSeamState.Unreachable;
         var poses = new Transform3D[points.Length];
@@ -274,12 +311,32 @@ public static class WeldPlanner
             Basis basis = TorchBasis(tangent.Normalized(), approaches[i], roll);
             poses[i] = new Transform3D(basis, points[i] + basis.Y * request.ArcGap);
         }
+        int[] representative = new[] { 0, poses.Length / 4, poses.Length / 2, 3 * poses.Length / 4, poses.Length - 1 }.Distinct().ToArray();
+        float reach = request.JointRest.Sum(j => j.Origin.Length()) + request.ToolTransform.Origin.Length() + .001f;
+        foreach (int i in representative)
+        {
+            cancellation.ThrowIfCancellationRequested();
+            if (poses[i].Origin.Length() > reach) { reason = "Seam exceeds robot reach"; return null; }
+            // Rigid torch geometry is independent of the IK branch. Reject inward normals
+            // before solving any robot joints; this is only a rejection pass, never validation.
+            if (!request.Collision.CheckToolPose(poses[i], request.ToolTransform, out reason))
+            { state = WeldSeamState.Collision; return null; }
+        }
+        foreach (int i in new[] { 0, poses.Length - 1 })
+        {
+            Transform3D clearance = poses[i]; clearance.Origin += clearance.Basis.Y * request.RetractDistance;
+            if (!request.Collision.CheckToolPose(clearance, request.ToolTransform, out reason))
+            { reason = "Torch clearance blocked: " + reason; state = WeldSeamState.TransferBlocked; return null; }
+        }
         // Try distinct IK basins at the seam entrance; subsequent points stay in the same continuous basin.
+        var testedStarts = new List<float[]>();
         foreach (float[] seed in Seeds(current))
         {
             cancellation.ThrowIfCancellationRequested();
             var solved = RobotKinematics.Solve(poses[0], seed, request.JointRest, request.ToolTransform);
             if (!solved.Success) continue;
+            if (testedStarts.Any(start => MaximumJointChange(start, solved.AnglesDegrees) < .1f)) continue;
+            testedStarts.Add(solved.AnglesDegrees);
             if (!request.Collision.Check(solved.AnglesDegrees, out string collision)) { reason = collision; state = WeldSeamState.Collision; continue; }
             var candidate = new Candidate();
             float[] previous = solved.AnglesDegrees;
@@ -292,7 +349,10 @@ public static class WeldPlanner
                 if (!solved.Success) { reason = $"Six-axis IK fails at {100f * i / (poses.Length - 1):0}% of seam"; weldValid = false; break; }
                 if (MaximumJointChange(previous, solved.AnglesDegrees) > 18f)
                 { reason = "Joint branch discontinuity / wrist singularity"; weldValid = false; break; }
-                if (!request.Collision.CheckMotion(previous, solved.AnglesDegrees, out collision, cancellation))
+                // Complete a continuous dense IK/pose pass first. A late obstruction can
+                // reject this orientation without spending thousands of swept-pose checks
+                // on its earlier segments. These cheap pose checks never accept a path.
+                if (!request.Collision.Check(solved.AnglesDegrees, out collision))
                 { reason = collision; state = WeldSeamState.Collision; weldValid = false; break; }
                 // Check Cartesian chord deviation because playback follows the exact validated joint interpolation.
                 float[] midpoint = Interpolate(previous, solved.AnglesDegrees, .5f);
@@ -304,6 +364,13 @@ public static class WeldPlanner
                 previous = solved.AnglesDegrees;
             }
             if (!weldValid) continue;
+            for (int i = 1; i < candidate.Weld.Count; i++)
+            {
+                cancellation.ThrowIfCancellationRequested();
+                if (!request.Collision.CheckMotion(candidate.Weld[i - 1].TargetAngles, candidate.Weld[i].TargetAngles, out collision, cancellation))
+                { reason = collision; state = WeldSeamState.Collision; weldValid = false; break; }
+            }
+            if (!weldValid) continue;
             Transform3D exit = poses[^1]; exit.Origin += exit.Basis.Y * request.RetractDistance;
             if (!CartesianLeg(request, previous, exit, seamId, candidate.Exit, cancellation, out collision))
             { reason = "Retraction blocked: " + collision; state = WeldSeamState.TransferBlocked; continue; }
@@ -311,7 +378,19 @@ public static class WeldPlanner
             solved = RobotKinematics.Solve(entry, candidate.Weld[0].TargetAngles, request.JointRest, request.ToolTransform);
             if (!solved.Success || !request.Collision.Check(solved.AnglesDegrees, out collision))
             { reason = "No clear approach position"; state = WeldSeamState.TransferBlocked; continue; }
-            if (!Transfer(request, current, solved.AnglesDegrees, seamId, candidate.Entry, cancellation, out collision))
+            if (allowCollidingEntry)
+            {
+                AddJointTransfer(request, current, solved.AnglesDegrees, seamId, candidate.Entry);
+                if (!request.Collision.CheckMotion(current, solved.AnglesDegrees, out collision, cancellation))
+                {
+                    candidate.HasCollision = true;
+                    candidate.Warnings.Add("Entry from colliding pose: " + collision);
+                    request.Collision.CheckDetailed(current, out _, out CollisionContact[] contacts);
+                    foreach (CollisionContact contact in contacts) candidate.Warnings.Add(contact.Reason);
+                }
+                candidate.ProcessedLength = Length(points);
+            }
+            else if (!Transfer(request, current, solved.AnglesDegrees, seamId, candidate.Entry, cancellation, out collision))
             { reason = "Transfer blocked: " + collision; state = WeldSeamState.TransferBlocked; continue; }
             if (!CartesianLeg(request, solved.AnglesDegrees, poses[0], seamId, candidate.Entry, cancellation, out collision,
                 candidate.Weld[0].TargetAngles))
@@ -319,6 +398,20 @@ public static class WeldPlanner
             return candidate;
         }
         return null;
+    }
+
+    private static Vector3[] Incline(Vector3[] points, Vector3[] approaches, float work, float lean)
+    {
+        if (work == 0 && lean == 0) return approaches;
+        var result = new Vector3[approaches.Length];
+        float cos = Mathf.Cos(Mathf.DegToRad(lean)), sin = Mathf.Sin(Mathf.DegToRad(lean));
+        for (int i = 0; i < result.Length; i++)
+        {
+            Vector3 tangent = (points[Math.Min(i + 1, points.Length - 1)] - points[Math.Max(0, i - 1)]).Normalized();
+            Vector3 normal = approaches[i].Rotated(tangent, Mathf.DegToRad(work));
+            result[i] = (normal * cos + tangent * sin).Normalized();
+        }
+        return result;
     }
 
     public static Basis TorchBasis(Vector3 travel, Vector3 awayFromWeld, float rollDegrees = 0)
@@ -418,16 +511,31 @@ public static class WeldPlanner
         return output.ToArray();
     }
 
-    private static void SampleSeam(WeldPlanRequest request, CadSeam seam, bool reverse, out Vector3[] sampledPoints, out Vector3[] sampledApproaches)
+    private static void SampleSeam(WeldPlanRequest request, CadSeam seam, bool reverse, out Vector3[] sampledPoints, out Vector3[] sampledApproaches, int sector = 0)
     {
         var points = new List<Vector3>(); var normals = new List<Vector3>();
         Basis normalTransform = request.PartTransform.Basis.Inverse().Transposed();
+        Vector3[] FaceField(Vector3[] supplied, Vector3 fallback)
+        {
+            var field = new Vector3[seam.Points.Length];
+            for (int i = 0; i < field.Length; i++)
+            {
+                Vector3 value = normalTransform * (supplied.Length == field.Length ? supplied[i] : fallback);
+                value = value.IsFinite() && value.LengthSquared() > .0001f ? value.Normalized() : i > 0 ? field[i - 1] : Vector3.Up;
+                // Correct isolated reversed CAD face orientation, retaining genuine normal
+                // curvature rather than blindly flattening every >90-degree bend.
+                if (i > 0 && value.Dot(field[i - 1]) < -.95f) value = -value;
+                field[i] = value;
+            }
+            return field;
+        }
+        Vector3[] faceA = FaceField(seam.NormalsA, seam.NormalA), faceB = FaceField(seam.NormalsB, seam.NormalB);
         Vector3 NormalAt(int i)
         {
-            Vector3 a = normalTransform * (seam.NormalsA.Length == seam.Points.Length ? seam.NormalsA[i] : seam.NormalA);
-            Vector3 b = normalTransform * (seam.NormalsB.Length == seam.Points.Length ? seam.NormalsB[i] : seam.NormalB);
+            Vector3 a = faceA[i] * (sector is 1 or 3 ? -1 : 1);
+            Vector3 b = faceB[i] * (sector is 1 or 2 ? -1 : 1);
             Vector3 normal = a.Normalized() + b.Normalized();
-            return normal.LengthSquared() > .0001f ? normal.Normalized() : a.LengthSquared() > .0001f ? a.Normalized() : Vector3.Up;
+            return normal.LengthSquared() > .0001f ? normal.Normalized() : a;
         }
         points.Add(request.PartTransform * seam.Points[0]); normals.Add(NormalAt(0));
         for (int i = 1; i < seam.Points.Length; i++)

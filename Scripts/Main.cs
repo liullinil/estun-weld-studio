@@ -307,7 +307,7 @@ public partial class Main : Node3D
             Vector3[] triangles=Array.Empty<Vector3>();
             if(_welding.Part is {} part){var placement=_robot.GlobalTransform.AffineInverse()*part.GlobalTransform;triangles=part.Document.Indices.Select(i=>placement*part.Document.Vertices[i]).ToArray();}
             var fixture=new CylinderMesh {TopRadius=.70f,BottomRadius=.70f,Height=.201f,RadialSegments=64};
-            _manualCollision=new CollisionScene(triangles,_robotCapsules,_controller.RestTransforms,staticTriangles:fixture.GetFaces().Select(p=>p+new Vector3(0,-.1095f,0)).ToArray(),robotTriangles:source);
+            _manualCollision=new CollisionScene(triangles,_robotCapsules,_controller.RestTransforms,staticTriangles:fixture.GetFaces().Select(p=>p+new Vector3(0,-.1095f,0)).ToArray(),robotTriangles:source,toolTip:WeldTorch.ToolTransform.Origin);
         }
         _manualCollision.CheckDetailed(angles,out _,out var contacts);_lastCollisionAngles=angles;
         ShowCollisions(contacts.SelectMany(c=>c.Links).Distinct().ToArray(),contacts.Select(c=>c.Reason).Distinct().ToArray());

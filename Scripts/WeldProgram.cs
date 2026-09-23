@@ -43,6 +43,9 @@ public sealed class PlannedSeam
     public float ProcessedLength { get; set; }
     public float Coverage => Length > 0 ? Math.Clamp(ProcessedLength / Length, 0, 1) : 0;
     public string[] WarningReasons { get; set; } = Array.Empty<string>();
+    public string OrientationStrategy { get; set; } = "Nominal face bisector";
+    public int OrientationAttempts { get; set; }
+    public bool AutoOriented { get; set; }
 }
 
 /// <summary>Joint interpolation target; collision-preview paths are explicitly marked on their seam.</summary>
@@ -66,7 +69,7 @@ public sealed class WeldProgram
     public Transform3D ToolTransform { get; init; }
     public string PartName { get; init; } = "Workpiece";
     public DateTime CreatedUtc { get; } = DateTime.UtcNow;
-    public string Method => "Nearest endpoint + 2-opt; multi-orientation IK; sampled collision validation with CAD slab bounds and torch capsules";
+    public string Method => "Nearest endpoint + 2-opt; automatic collision-aware approach side, work angle, lean and torch roll; multi-branch IK; sampled full-path collision validation";
     public int ReadyCount => Seams.Count(s => s.State == WeldSeamState.Ready);
     public int WarningCount => Seams.Count(s => s.State == WeldSeamState.Warning);
     public int BlockedCount => Seams.Count(s => s.State != WeldSeamState.Ready && s.State != WeldSeamState.Deleted && s.State != WeldSeamState.Warning);
@@ -82,7 +85,8 @@ public sealed class WeldProgram
         validation = WarningCount > 0 ? "Offline preview contains warning paths: collision freedom and complete seam coverage are not guaranteed. Inspect seam warnings before controller use." : "Offline geometric simulation. Source-mesh oriented slab bounds, torch capsules and tessellated CAD; sampled motion. Requires calibrated cell and controller postprocessing before hardware use.",
         tool = Pose(ToolTransform), startJoints = StartAngles,
         seams = Seams.Select(s => new { id = s.Id, state = s.State.ToString(), s.Reason, s.Order, s.Reversed, length = s.Length,
-            hasCollision = s.HasCollision, partial = s.Partial, processedLength = s.ProcessedLength, coverage = s.Coverage, warningReasons = s.WarningReasons }),
+            hasCollision = s.HasCollision, partial = s.Partial, processedLength = s.ProcessedLength, coverage = s.Coverage, warningReasons = s.WarningReasons,
+            orientationStrategy = s.OrientationStrategy, orientationAttempts = s.OrientationAttempts, autoOriented = s.AutoOriented }),
         moves = Motions.Select((m, i) => new { index = i + 1, type = m.Kind, seam = m.SeamId, joints = m.TargetAngles, tcp = Pose(m.Tcp), arc = m.ArcOn, duration = m.DurationSeconds })
     }, new JsonSerializerOptions { WriteIndented = true });
 

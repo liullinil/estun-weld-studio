@@ -32,7 +32,7 @@ public partial class PlannerPerformance : Node
             var document = await new CadImportService().ImportAsync(ProjectSettings.GlobalizePath("res://Assets/Samples/WeldingBracket.step"));
             var placement = new Transform3D(Basis.Identity, new Vector3(.85f, .15f, 0) - new Vector3(document.Bounds.GetCenter().X, document.Bounds.Position.Y, document.Bounds.GetCenter().Z));
             var plinth = new CylinderMesh { TopRadius = .7f, BottomRadius = .7f, Height = .2f, RadialSegments = 64 }.GetFaces().Select(p => p + new Vector3(0, -.11f, 0)).ToArray();
-            var collision = new CollisionScene(document.Indices.Select(i => placement * document.Vertices[i]).ToArray(), capsules, staticTriangles: plinth);
+            var collision = new CollisionScene(document.Indices.Select(i => placement * document.Vertices[i]).ToArray(), capsules, staticTriangles: plinth, toolTip: WeldTorch.ToolTransform.Origin);
             var request = new WeldPlanRequest { Seams = document.Seams.Where(s => s.Kind == "Part contact").ToArray(), PartTransform = placement, ToolTransform = WeldTorch.ToolTransform, Collision = collision, PartName = document.Name };
             long allocated = GC.GetTotalAllocatedBytes(true);
             watch.Restart();

@@ -64,7 +64,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Robot checks failed (exit $LASTEXITCODE)." }
         & $godotExecutable --headless --path $projectRoot 'res://Tests/SceneChecks.tscn'
         if ($LASTEXITCODE -ne 0) { throw "Scene integration checks failed (exit $LASTEXITCODE)." }
-        foreach($scene in @('RobotMeshChecks','DesktopShellChecks','DesktopWorkflowParityChecks','GizmoChecks','CadImportChecks','WeldChecks','WarningPlannerChecks','CollisionDetailChecks','RobotPostprocessorChecks')) {
+        foreach($scene in @('RobotMeshChecks','DesktopShellChecks','DesktopWorkflowParityChecks','GizmoChecks','CadImportChecks','WeldChecks','WarningPlannerChecks','OrientationChecks','CollisionDetailChecks','RobotPostprocessorChecks')) {
             & $godotExecutable --headless --path $projectRoot ("res://Tests/"+$scene+'.tscn')
             if($LASTEXITCODE -ne 0){throw "$scene failed (exit $LASTEXITCODE)."}
         }
